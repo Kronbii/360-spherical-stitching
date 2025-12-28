@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>360° Panorama Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body { 
+            font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #0d0d12 0%, #1a1a24 50%, #0d0d12 100%);
+            color: #e8e8ed;
+            overflow: hidden;
+            min-height: 100vh;
+        }
+        
+        #container { 
+            width: 100vw; 
+            height: 100vh; 
+            position: relative;
+            cursor: grab;
+        }
+        
+        #container:active {
+            cursor: grabbing;
+        }
+        
+        #info {
+            position: absolute;
+            top: 24px;
+            left: 24px;
+            background: linear-gradient(145deg, rgba(20, 20, 30, 0.92), rgba(15, 15, 22, 0.95));
+            padding: 20px 28px;
+            border-radius: 16px;
+            font-size: 14px;
+            z-index: 100;
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 
+                0 8px 32px rgba(0, 0, 0, 0.4),
+                0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+            max-width: 280px;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+        
+        #info:hover {
+            border-color: rgba(255, 255, 255, 0.12);
+        }
+        
+        #info h1 {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: #fff;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, #fff 0%, #a0a0b0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        #info p {
+            color: rgba(255, 255, 255, 0.6);
+            line-height: 1.6;
+            font-size: 13px;
+        }
+        
+        #info .controls {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        
+        #info .control-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+        
+        #info .control-item:last-child {
+            margin-bottom: 0;
+        }
+        
+        #info .key {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 200;
+            text-align: center;
+        }
+        
+        #loading .spinner {
+            width: 48px;
+            height: 48px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        #loading .text {
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.6);
+            letter-spacing: 0.02em;
+        }
+        
+        #fov-display {
+            position: absolute;
+            bottom: 24px;
+            right: 24px;
+            background: rgba(20, 20, 30, 0.85);
+            padding: 10px 16px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            color: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            z-index: 100;
+        }
+        
+        /* Fullscreen button */
+        #fullscreen-btn {
+            position: absolute;
+            bottom: 24px;
+            left: 24px;
+            background: rgba(20, 20, 30, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+            padding: 12px 16px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 13px;
+            font-family: inherit;
+            backdrop-filter: blur(10px);
+            transition: all 0.2s ease;
+            z-index: 100;
+        }
+        
+        #fullscreen-btn:hover {
+            background: rgba(30, 30, 45, 0.9);
+            border-color: rgba(255, 255, 255, 0.2);
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    
+    <div id="info">
+        <h1>360° Panorama</h1>
+        <p>Explore your spherical panorama by dragging to look around in any direction.</p>
+        <div class="controls">
+            <div class="control-item">
+                <span class="key">Drag</span>
+                <span>Look around</span>
+            </div>
+            <div class="control-item">
+                <span class="key">Scroll</span>
+                <span>Zoom in/out</span>
+            </div>
+            <div class="control-item">
+                <span class="key">F</span>
+                <span>Fullscreen</span>
+            </div>
+        </div>
+    </div>
+    
+    <div id="loading">
+        <div class="spinner"></div>
+        <div class="text">Loading panorama...</div>
+    </div>
+    
+    <div id="fov-display">FOV: 75°</div>
+    
+    <button id="fullscreen-btn">⛶ Fullscreen</button>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Three.js 360° panorama viewer
+        let camera, scene, renderer;
+        let isUserInteracting = false;
+        let onPointerDownMouseX = 0, onPointerDownMouseY = 0;
+        let lon = 0, onPointerDownLon = 0;
+        let lat = 0, onPointerDownLat = 0;
+        let phi = 0, theta = 0;
+        let touchStartDistance = 0;
+
+        init();
+        animate();
+
+        function init() {
+            const container = document.getElementById('container');
+            
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1100);
+            
+            // Scene
+            scene = new THREE.Scene();
+            
+            // Sphere geometry (inverted for inside view)
+            const geometry = new THREE.SphereGeometry(500, 60, 40);
+            geometry.scale(-1, 1, 1);
+            
+            // Load panorama texture - try both JPG and PNG
+            const loader = new THREE.TextureLoader();
+            
+            function loadPanorama(filename, fallback) {
+                loader.load(
+                    filename,
+                    function(texture) {
+                        document.getElementById('loading').style.display = 'none';
+                        texture.minFilter = THREE.LinearFilter;
+                        texture.magFilter = THREE.LinearFilter;
+                        mesh.material.map = texture;
+                        mesh.material.needsUpdate = true;
+                    },
+                    undefined,
+                    function(err) {
+                        if (fallback) {
+                            loadPanorama(fallback, null);
+                        } else {
+                            document.getElementById('loading').innerHTML = 
+                                '<div class="text" style="color: #ff6b6b;">Error loading panorama</div>';
+                        }
+                    }
+                );
+            }
+            
+            // Try JPG first, then PNG
+            loadPanorama('panorama.jpg', 'panorama.png');
+            
+            // Create initial texture placeholder
+            const texture = new THREE.Texture();
+            
+            const material = new THREE.MeshBasicMaterial({ map: texture });
+            const mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+            
+            // Event listeners - pointer events
+            container.addEventListener('pointerdown', onPointerDown);
+            container.addEventListener('pointermove', onPointerMove);
+            container.addEventListener('pointerup', onPointerUp);
+            
+            // Touch events for pinch zoom
+            container.addEventListener('touchstart', onTouchStart, { passive: false });
+            container.addEventListener('touchmove', onTouchMove, { passive: false });
+            
+            // Mouse wheel
+            container.addEventListener('wheel', onWheel, { passive: false });
+            
+            // Keyboard
+            document.addEventListener('keydown', onKeyDown);
+            
+            // Fullscreen button
+            document.getElementById('fullscreen-btn').addEventListener('click', toggleFullscreen);
+            
+            // Window resize
+            window.addEventListener('resize', onWindowResize);
+            
+            // Update FOV display
+            updateFOVDisplay();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onPointerDown(event) {
+            if (event.isPrimary === false) return;
+            
+            isUserInteracting = true;
+            onPointerDownMouseX = event.clientX;
+            onPointerDownMouseY = event.clientY;
+            onPointerDownLon = lon;
+            onPointerDownLat = lat;
+        }
+
+        function onPointerMove(event) {
+            if (event.isPrimary === false) return;
+            
+            if (isUserInteracting) {
+                lon = (onPointerDownMouseX - event.clientX) * 0.15 + onPointerDownLon;
+                lat = (event.clientY - onPointerDownMouseY) * 0.15 + onPointerDownLat;
+            }
+        }
+
+        function onPointerUp() {
+            isUserInteracting = false;
+        }
+
+        function onTouchStart(event) {
+            if (event.touches.length === 2) {
+                const dx = event.touches[0].clientX - event.touches[1].clientX;
+                const dy = event.touches[0].clientY - event.touches[1].clientY;
+                touchStartDistance = Math.sqrt(dx * dx + dy * dy);
+            }
+        }
+
+        function onTouchMove(event) {
+            if (event.touches.length === 2) {
+                event.preventDefault();
+                const dx = event.touches[0].clientX - event.touches[1].clientX;
+                const dy = event.touches[0].clientY - event.touches[1].clientY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                const delta = (touchStartDistance - distance) * 0.1;
+                const fov = camera.fov + delta;
+                camera.fov = THREE.MathUtils.clamp(fov, 30, 100);
+                camera.updateProjectionMatrix();
+                touchStartDistance = distance;
+                updateFOVDisplay();
+            }
+        }
+
+        function onWheel(event) {
+            event.preventDefault();
+            const fov = camera.fov + event.deltaY * 0.05;
+            camera.fov = THREE.MathUtils.clamp(fov, 30, 100);
+            camera.updateProjectionMatrix();
+            updateFOVDisplay();
+        }
+
+        function onKeyDown(event) {
+            if (event.key === 'f' || event.key === 'F') {
+                toggleFullscreen();
+            }
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        function updateFOVDisplay() {
+            document.getElementById('fov-display').textContent = 'FOV: ' + Math.round(camera.fov) + '°';
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Clamp latitude to prevent flipping
+            lat = Math.max(-85, Math.min(85, lat));
+            
+            // Convert to radians
+            phi = THREE.MathUtils.degToRad(90 - lat);
+            theta = THREE.MathUtils.degToRad(lon);
+            
+            // Calculate camera target
+            const x = 500 * Math.sin(phi) * Math.cos(theta);
+            const y = 500 * Math.cos(phi);
+            const z = 500 * Math.sin(phi) * Math.sin(theta);
+            
+            camera.lookAt(x, y, z);
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
+
