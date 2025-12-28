@@ -14,11 +14,14 @@ class MatchingConfig:
     """Configuration for ORB feature matching."""
     match_width: Optional[int] = 1600  # Width to downscale images for matching (None = use full resolution)
     orb_nfeatures: int = 3000  # Number of ORB features to detect
-    ratio_test_threshold: float = 0.75  # Lowe's ratio test threshold
-    ransac_reproj_threshold: float = 3.0  # RANSAC reprojection threshold
-    min_inliers: int = 60  # Minimum number of inliers required
+    ratio_test_threshold: float = 0.75  # Lowe's ratio test threshold (lower = stricter, 0.75 = balanced)
+    ransac_reproj_threshold: float = 3.0  # RANSAC reprojection threshold (scaled by image size)
+    min_inliers: int = 30  # Minimum number of inliers required (lower = more lenient)
     use_clahe: bool = False  # Use CLAHE for feature extraction
     disable_circular_closure: bool = False  # Disable circular closure detection (use if video doesn't loop)
+    symmetric_matching: bool = False  # Use symmetric matching (cross-check) - can be too strict for some datasets
+    ransac_refinement: bool = True  # Refine homography with inliers after initial RANSAC
+    ransac_max_iters: int = 3000  # Maximum RANSAC iterations (higher = better but slower)
 
 
 @dataclass
@@ -106,6 +109,9 @@ class PipelineConfig:
                 "min_inliers": self.matching.min_inliers,
                 "use_clahe": self.matching.use_clahe,
                 "disable_circular_closure": self.matching.disable_circular_closure,
+                "symmetric_matching": self.matching.symmetric_matching,
+                "ransac_refinement": self.matching.ransac_refinement,
+                "ransac_max_iters": self.matching.ransac_max_iters,
             },
             "intrinsics": {
                 "hfov_deg": self.intrinsics.hfov_deg,
@@ -204,6 +210,9 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         min_inliers=matching_data.get('min_inliers', 60),
         use_clahe=matching_data.get('use_clahe', False),
         disable_circular_closure=matching_data.get('disable_circular_closure', False),
+        symmetric_matching=matching_data.get('symmetric_matching', True),
+        ransac_refinement=matching_data.get('ransac_refinement', True),
+        ransac_max_iters=matching_data.get('ransac_max_iters', 3000),
     )
     
     calib_json_str = intrinsics_data.get('calib_json')

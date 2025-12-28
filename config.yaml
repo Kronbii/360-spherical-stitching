@@ -1,5 +1,5 @@
 # Example configuration file for 360° panorama stitching
-# Usage: python run.py --config config.yaml
+# Usage: python run.py config.yaml
 
 # Required: Input source (choose one)
 # input_dir: ./photos  # Directory containing input images
@@ -7,13 +7,13 @@
 video: ./IMG_1480_2.MOV
 
 # Required: Output directory
-output_dir: ./output/5-fps
+output_dir: ./output/tesing
 
 # Video extraction settings (only used if 'video' is specified above)
 video_extraction:
-  method: motion  # Options: uniform, interval, fps, motion
+  method: interval  # Options: uniform, interval, fps, motion
   num_frames: 40  # For 'uniform' method
-  frame_interval: 15  # For 'interval' method
+  frame_interval: 5  # For 'interval' method
   extract_fps: 20.0  # For 'fps' method
 
 # Output settings
@@ -26,9 +26,13 @@ output:
 matching:
   match_width: 1600  # Width for downscaled images during matching (or null for full resolution)
   match_full_res: true  # If true, use full resolution (match_width is ignored)
-  min_inliers: 60  # Minimum RANSAC inliers required
+  min_inliers: 100  # Minimum RANSAC inliers required (lowered from 60 for better success rate)
+  ratio_test_threshold: 0.7  # Lowe's ratio test (0.75 = balanced, lower = stricter)
+  symmetric_matching: false  # Cross-check matches (can be too strict - enable if you have many features)
+  ransac_refinement: true  # Refine homography after RANSAC (recommended)
+  ransac_max_iters: 6000  # Max RANSAC iterations
   use_clahe: false  # Apply CLAHE for feature extraction (helps with low contrast)
-  disable_circular_closure: false  # Set to true if your video doesn't loop (prevents false closure detection)
+  disable_circular_closure: true  # Set to true if your video doesn't loop (prevents false closure detection)
 
 # Camera intrinsics
 intrinsics:
@@ -49,4 +53,3 @@ debug:
   save_warped_frames: 0  # Number of warped frames to save (0 = none)
   save_seams: true  # Save blending masks
   verbose_logging: true  # Enable verbose logging
-

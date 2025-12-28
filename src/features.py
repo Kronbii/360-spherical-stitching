@@ -103,7 +103,8 @@ def extract_orb_features(
 def match_features_knn(
     desc1: np.ndarray,
     desc2: np.ndarray,
-    ratio_threshold: float = 0.75
+    ratio_threshold: float = 0.7,
+    symmetric: bool = True
 ) -> List[cv2.DMatch]:
     """
     Match features using BFMatcher with kNN and ratio test.
@@ -111,7 +112,8 @@ def match_features_knn(
     Args:
         desc1: Descriptors from first image.
         desc2: Descriptors from second image.
-        ratio_threshold: Lowe's ratio test threshold.
+        ratio_threshold: Lowe's ratio test threshold (lower = stricter).
+        symmetric: If True, perform symmetric matching (cross-check) for better quality.
         
     Returns:
         List of good matches after ratio test.
@@ -137,6 +139,35 @@ def match_features_knn(
             if m.distance < ratio_threshold * n.distance:
                 good_matches.append(m)
     
+    # Symmetric matching (cross-check): match in both directions and keep only consistent matches
+    if symmetric and len(good_matches) > 0:
+        try:
+            # Match in reverse direction
+            matches_reverse = bf.knnMatch(desc2, desc1, k=2)
+            
+            # Create set of reverse matches for fast lookup
+            reverse_match_map = {}
+            for match_pair in matches_reverse:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < ratio_threshold * n.distance:
+                        # Reverse match: trainIdx -> queryIdx
+                        reverse_match_map[m.trainIdx] = m.queryIdx
+            
+            # Keep only matches that are consistent in both directions
+            symmetric_matches = []
+            for match in good_matches:
+                # Check if reverse match exists and points to same keypoint
+                if match.trainIdx in reverse_match_map:
+                    if reverse_match_map[match.trainIdx] == match.queryIdx:
+                        symmetric_matches.append(match)
+            
+            logger.debug(f"Symmetric matching: {len(good_matches)} -> {len(symmetric_matches)} matches")
+            return symmetric_matches
+        except cv2.error as e:
+            logger.debug(f"Symmetric matching failed, using one-way matches: {e}")
+            return good_matches
+    
     return good_matches
 
 
@@ -144,7 +175,9 @@ def find_homography_ransac(
     kp1: List[cv2.KeyPoint],
     kp2: List[cv2.KeyPoint],
     matches: List[cv2.DMatch],
-    reproj_threshold: float = 3.0
+    reproj_threshold: float = 3.0,
+    max_iters: int = 3000,
+    refine: bool = True
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int]:
     """
     Find homography between two images using RANSAC.
@@ -154,6 +187,8 @@ def find_homography_ransac(
         kp2: Keypoints from second image.
         matches: Good matches from ratio test.
         reproj_threshold: RANSAC reprojection threshold in pixels.
+        max_iters: Maximum RANSAC iterations.
+        refine: If True, refine homography using all inliers after RANSAC.
         
     Returns:
         Tuple of (homography matrix, inlier mask, number of inliers).
@@ -170,7 +205,7 @@ def find_homography_ransac(
         src_pts, dst_pts,
         method=cv2.RANSAC,
         ransacReprojThreshold=reproj_threshold,
-        maxIters=2000,
+        maxIters=max_iters,
         confidence=0.995
     )
     
@@ -178,6 +213,34 @@ def find_homography_ransac(
         return None, None, 0
     
     inliers = int(mask.sum())
+    
+    # Refinement: recompute homography using all inliers with least squares for better accuracy
+    if refine and inliers >= 4:
+        inlier_pts1 = src_pts[mask.ravel() == 1]
+        inlier_pts2 = dst_pts[mask.ravel() == 1]
+        
+        # Use all inliers to compute refined homography (direct least squares, no RANSAC)
+        try:
+            H_refined = cv2.findHomography(
+                inlier_pts1, inlier_pts2,
+                method=0  # 0 = all points (least squares), faster and more accurate for inliers
+            )[0]
+            
+            if H_refined is not None:
+                # Verify refined homography by checking reprojection error
+                # Project points and check how many are still inliers
+                projected = cv2.perspectiveTransform(inlier_pts1, H_refined)
+                errors = np.linalg.norm(projected - inlier_pts2, axis=2).ravel()
+                refined_inlier_mask = errors < reproj_threshold * 1.5  # Slightly more lenient
+                refined_inliers = int(refined_inlier_mask.sum())
+                
+                # Use refined homography if it maintains most inliers
+                if refined_inliers >= inliers * 0.9:
+                    H = H_refined
+                    logger.debug(f"Homography refined: {refined_inliers} inliers (was {inliers})")
+        except Exception as e:
+            logger.debug(f"Homography refinement failed: {e}, using original")
+    
     return H, mask, inliers
 
 
@@ -217,7 +280,7 @@ def match_image_pair(
         )
     
     # Match features
-    matches = match_features_knn(desc1, desc2, config.ratio_test_threshold)
+    matches = match_features_knn(desc1, desc2, config.ratio_test_threshold, config.symmetric_matching)
     logger.debug(f"Pair ({idx1},{idx2}): {len(matches)} matches after ratio test")
     
     if len(matches) < 4:
@@ -228,8 +291,17 @@ def match_image_pair(
     
     # Find homography
     # Scale RANSAC threshold if images were downscaled
-    scaled_threshold = config.ransac_reproj_threshold * scale
-    H, mask, inliers = find_homography_ransac(kp1, kp2, matches, scaled_threshold)
+    # Also scale by image size for better adaptation (base threshold assumes ~1600px width)
+    img_width = img1.shape[1]
+    base_width = 1600.0
+    size_scale = img_width / base_width
+    scaled_threshold = config.ransac_reproj_threshold * scale * max(0.5, min(2.0, size_scale))
+    H, mask, inliers = find_homography_ransac(
+        kp1, kp2, matches, 
+        scaled_threshold, 
+        max_iters=config.ransac_max_iters,
+        refine=config.ransac_refinement
+    )
     
     if H is None:
         return MatchResult(
