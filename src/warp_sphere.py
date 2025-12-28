@@ -42,9 +42,11 @@ def create_equirectangular_grid(width: int, height: int) -> Tuple[np.ndarray, np
     
     # Convert to spherical angles
     # theta: 0 -> -pi, 1 -> +pi (azimuth)
-    # phi: 0 -> +pi/2, 1 -> -pi/2 (elevation, top to bottom)
+    # phi: 0 -> -pi/2, 1 -> +pi/2 (elevation, top to bottom)
+    # Top of equirectangular (V=0) = looking down (-pi/2)
+    # Bottom of equirectangular (V=1) = looking up (+pi/2)
     theta = 2 * np.pi * U - np.pi  # [-pi, +pi]
-    phi = np.pi / 2 - np.pi * V    # [+pi/2, -pi/2]
+    phi = -np.pi / 2 + np.pi * V   # [-pi/2, +pi/2]
     
     return theta, phi
 
