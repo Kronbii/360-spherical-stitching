@@ -1,4 +1,4 @@
-# 360° Spherical Panorama Stitching
+   j# 360° Spherical Panorama Stitching
 
 Create stunning 360° equirectangular panoramas from a sequence of phone photos captured on a tripod with pure rotation.
 

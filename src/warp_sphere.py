@@ -108,16 +108,16 @@ def compute_warp_maps(
     # Stack into (H, W, 3)
     r_world = np.stack([x_world, y_world, z_world], axis=-1)
     
-    # Transform to camera frame: r_cam = R^T @ r_world
-    # R^T is shape (3, 3), r_world is (H, W, 3)
-    # We want r_cam[i,j] = R^T @ r_world[i,j]
-    R_T = R.T.astype(np.float32)
+    # Transform to camera frame: r_cam = R @ r_world
+    # R_global transforms world directions to camera frame
+    # (camera rotated by R, so world point appears at R @ world_dir in camera)
+    R_mat = R.astype(np.float32)
     
     # Efficient batch matrix-vector multiplication
     # Reshape r_world to (H*W, 3), multiply, reshape back
     H, W = theta.shape
     r_flat = r_world.reshape(-1, 3)
-    r_cam_flat = (R_T @ r_flat.T).T  # (H*W, 3)
+    r_cam_flat = (R_mat @ r_flat.T).T  # (H*W, 3)
     r_cam = r_cam_flat.reshape(H, W, 3)
     
     x_cam = r_cam[:, :, 0]
