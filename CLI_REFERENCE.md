@@ -87,9 +87,16 @@ Example: `--output_format png`
 ### `--match_width`
 Type: Integer  
 Default: `1600`  
-Description: Width for downscaled images during feature matching (speeds up matching)  
+Description: Width for downscaled images during feature matching (speeds up matching). Ignored if `--match_full_res` is used  
 Example: `--match_width 800`  
 Note: Lower values = faster matching, but may reduce matching quality
+
+### `--match_full_res`
+Type: Flag  
+Default: `False`  
+Description: Use full resolution images for ORB feature matching (no downscaling). This provides maximum feature detection accuracy but is slower and uses more memory  
+Example: `--match_full_res`  
+Note: When enabled, `--match_width` is ignored. Useful for high-resolution images where you want maximum matching accuracy
 
 ### `--min_inliers`
 Type: Integer  

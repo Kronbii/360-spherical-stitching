@@ -11,7 +11,7 @@ import json
 @dataclass
 class MatchingConfig:
     """Configuration for ORB feature matching."""
-    match_width: int = 1600  # Width to downscale images for matching
+    match_width: Optional[int] = 1600  # Width to downscale images for matching (None = use full resolution)
     orb_nfeatures: int = 3000  # Number of ORB features to detect
     ratio_test_threshold: float = 0.75  # Lowe's ratio test threshold
     ransac_reproj_threshold: float = 3.0  # RANSAC reprojection threshold

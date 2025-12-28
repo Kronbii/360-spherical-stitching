@@ -289,6 +289,8 @@ def no_blend(
     This provides the sharpest result with no blur, but may show seams if alignment
     is imperfect. For each pixel, selects the image with the highest mask value.
     
+    Memory-optimized: processes images one at a time instead of stacking all masks.
+    
     Args:
         images: List of warped images (BGR, uint8).
         masks: List of masks (uint8, 0 or 255).
@@ -302,22 +304,23 @@ def no_blend(
     
     H, W = images[0].shape[:2]
     
-    logger.info(f"No blending: selecting highest-weight image at each pixel for {len(images)} images...")
+    logger.info(f"No blending: selecting highest-weight image at each pixel for {len(images)} images (memory-optimized)...")
     
-    # Find which image has the highest mask value at each pixel
-    # Stack all masks to find argmax
-    mask_stack = np.stack(masks, axis=0)  # Shape: (n_images, H, W)
-    
-    # Find index of image with highest mask value at each pixel
-    best_image_idx = np.argmax(mask_stack, axis=0)  # Shape: (H, W)
-    
-    # Create output by selecting from appropriate image
+    # Initialize result and track best mask values per pixel
+    # Instead of stacking all masks, we iterate and keep track of the best
     result = np.zeros((H, W, 3), dtype=np.uint8)
+    best_mask_value = np.zeros((H, W), dtype=np.uint8)  # Track highest mask value seen so far
     
-    for i, img in enumerate(images):
-        # Where this image is the best (has highest mask value)
-        mask = (best_image_idx == i)
-        result[mask] = img[mask]
+    # Process images one at a time
+    for i, (img, mask) in enumerate(zip(images, masks)):
+        # Find pixels where this mask is better than previous best
+        is_better = mask > best_mask_value
+        
+        # Update result where this image is better
+        result[is_better] = img[is_better]
+        
+        # Update best mask value
+        best_mask_value = np.maximum(best_mask_value, mask)
     
     logger.info("No blending complete")
     

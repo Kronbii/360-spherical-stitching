@@ -347,14 +347,18 @@ def run_pipeline(config: PipelineConfig) -> Path:
     save_intrinsics_report(calib, image_infos, image_width, image_height, intrinsics_path)
     
     # ============================================================
-    # STEP 3: Load images for matching (downscaled)
+    # STEP 3: Load images for matching (downscaled or full resolution)
     # ============================================================
     logger.info("\n[STEP 3] Loading images for feature matching...")
     
-    match_scale = config.matching.match_width / image_width
-    match_images = load_images(image_infos, config.matching.match_width)
-    
-    logger.info(f"Match scale: {match_scale:.3f} ({config.matching.match_width}px width)")
+    if config.matching.match_width is None:
+        match_scale = 1.0
+        match_images = load_images(image_infos, None)
+        logger.info(f"Using full resolution images for matching (no downscaling)")
+    else:
+        match_scale = config.matching.match_width / image_width
+        match_images = load_images(image_infos, config.matching.match_width)
+        logger.info(f"Match scale: {match_scale:.3f} ({config.matching.match_width}px width)")
     
     # ============================================================
     # STEP 4: (Optional) Undistort images

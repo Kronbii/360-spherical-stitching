@@ -161,7 +161,12 @@ Tips for capturing good panoramas:
         '--match_width',
         type=int,
         default=1600,
-        help='Width for downscaled images during feature matching. Default: 1600'
+        help='Width for downscaled images during feature matching. Default: 1600. Use --match_full_res to disable downscaling'
+    )
+    parser.add_argument(
+        '--match_full_res',
+        action='store_true',
+        help='Use full resolution images for ORB feature matching (no downscaling). Slower but potentially more accurate'
     )
     parser.add_argument(
         '--min_inliers',
@@ -283,7 +288,7 @@ def main() -> int:
         input_dir=input_dir,
         output_dir=args.output_dir,
         matching=MatchingConfig(
-            match_width=args.match_width,
+            match_width=None if args.match_full_res else args.match_width,
             min_inliers=args.min_inliers,
             use_clahe=args.clahe,
         ),
