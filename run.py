@@ -202,6 +202,18 @@ Tips for capturing good panoramas:
         default=5,
         help='Number of pyramid levels for multiband blending. Default: 5'
     )
+    parser.add_argument(
+        '--multiband_sigma',
+        type=float,
+        default=30.0,
+        help='Gaussian blur sigma for multiband weight computation (lower = sharper). Default: 30.0'
+    )
+    parser.add_argument(
+        '--feather_sigma',
+        type=float,
+        default=50.0,
+        help='Gaussian blur sigma for feather blending (lower = sharper). Default: 50.0'
+    )
     
     # Debug settings
     parser.add_argument(
@@ -282,6 +294,8 @@ def main() -> int:
         blending=BlendingConfig(
             method=args.blend,
             multiband_levels=args.blend_levels,
+            multiband_sigma=args.multiband_sigma,
+            feather_sigma=args.feather_sigma,
         ),
         output=OutputConfig(
             pano_width=args.pano_width,

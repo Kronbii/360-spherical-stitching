@@ -148,6 +148,20 @@ Description: Number of pyramid levels for multiband blending
 Example: `--blend_levels 4`  
 Note: Only applies to multiband blending
 
+### `--multiband_sigma`
+Type: Float  
+Default: `30.0`  
+Description: Gaussian blur sigma for multiband blending weight computation. Controls transition softness between images. Lower values = sharper transitions (less blur), higher values = smoother transitions (more blur)  
+Example: `--multiband_sigma 15.0`  
+Note: Only applies to multiband blending. If panorama looks blurry, try reducing this value (e.g., `15.0` or `20.0`)
+
+### `--feather_sigma`
+Type: Float  
+Default: `50.0`  
+Description: Gaussian blur sigma for feather blending. Controls transition softness between images. Lower values = sharper transitions (less blur), higher values = smoother transitions (more blur)  
+Example: `--feather_sigma 20.0`  
+Note: Only applies to feather blending. If panorama looks blurry, try reducing this value (e.g., `15.0` or `20.0`)
+
 ---
 
 ## Debug Options
@@ -189,6 +203,18 @@ python run.py --video ./video.mov --output_dir ./output \
   --pano_width 2048 --blend feather --match_width 1200
 ```
 
+### Sharp Feather Blending (Reduced Blur)
+```bash
+python run.py --video ./video.mov --output_dir ./output \
+  --blend feather --feather_sigma 15.0
+```
+
+### Sharp Multiband Blending (Reduced Blur)
+```bash
+python run.py --input_dir ./photos --output_dir ./output \
+  --blend multiband --multiband_sigma 15.0 --blend_levels 3
+```
+
 ### Portrait Mode Phone Camera
 ```bash
 python run.py --video ./video.mov --output_dir ./output \
@@ -216,4 +242,5 @@ python run.py --input_dir ./photos --output_dir ./output \
 3. **Memory**: Use `--blend feather` if you get out-of-memory errors
 4. **Quality**: Lower `--pano_width` for faster processing and less memory
 5. **Matching**: Lower `--min_inliers` if matching fails, but may reduce quality
+6. **Blur Control**: If panorama looks blurry, reduce `--feather_sigma` or `--multiband_sigma` (e.g., `15.0-20.0` for sharper results)
 

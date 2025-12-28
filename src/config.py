@@ -31,6 +31,7 @@ class BlendingConfig:
     """Configuration for image blending."""
     method: str = "multiband"  # 'multiband' or 'feather'
     multiband_levels: int = 5  # Number of pyramid levels for multiband
+    multiband_sigma: float = 30.0  # Gaussian blur sigma for multiband weight computation
     feather_sigma: float = 50.0  # Gaussian blur sigma for feather blending
 
 
@@ -97,6 +98,7 @@ class PipelineConfig:
             "blending": {
                 "method": self.blending.method,
                 "multiband_levels": self.blending.multiband_levels,
+                "multiband_sigma": self.blending.multiband_sigma,
                 "feather_sigma": self.blending.feather_sigma,
             },
             "output": {

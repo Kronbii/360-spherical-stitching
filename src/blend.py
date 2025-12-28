@@ -214,7 +214,7 @@ def multiband_blend(
     # Compute weights from masks (distance-based for smooth transitions)
     weights = []
     for mask in masks:
-        w = create_distance_weight(mask, sigma=30.0)
+        w = create_distance_weight(mask, sigma=config.multiband_sigma)
         weights.append(w)
     
     # Normalize weights (they should sum to 1 where at least one mask is valid)
