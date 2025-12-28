@@ -11,10 +11,10 @@ output_dir: ./output/5-fps
 
 # Video extraction settings (only used if 'video' is specified above)
 video_extraction:
-  method: fps  # Options: uniform, interval, fps, motion
+  method: motion  # Options: uniform, interval, fps, motion
   num_frames: 40  # For 'uniform' method
   frame_interval: 15  # For 'interval' method
-  extract_fps: 2.0  # For 'fps' method
+  extract_fps: 20.0  # For 'fps' method
 
 # Output settings
 output:
@@ -25,21 +25,22 @@ output:
 # Feature matching settings
 matching:
   match_width: 1600  # Width for downscaled images during matching (or null for full resolution)
-  match_full_res: false  # If true, use full resolution (match_width is ignored)
+  match_full_res: true  # If true, use full resolution (match_width is ignored)
   min_inliers: 60  # Minimum RANSAC inliers required
   use_clahe: false  # Apply CLAHE for feature extraction (helps with low contrast)
+  disable_circular_closure: false  # Set to true if your video doesn't loop (prevents false closure detection)
 
 # Camera intrinsics
 intrinsics:
   hfov_deg: 42  # Horizontal field of view in degrees (fallback if EXIF unavailable)
-  calib_json: null  # Path to calibration JSON file (optional)
+  calib_json: ./intrinsics.json  # Path to calibration JSON file (optional)
 
 # Blending settings
 blending:
-  method: multiband  # Options: multiband, feather, none
-  multiband_levels: 5  # Number of pyramid levels for multiband blending
-  multiband_sigma: 30.0  # Gaussian blur sigma for multiband (lower = sharper)
-  feather_sigma: 50.0  # Gaussian blur sigma for feather blending (lower = sharper)
+  method: none  # Options: multiband, feather, none
+  multiband_levels: 1  # Number of pyramid levels for multiband blending
+  multiband_sigma: 10.0  # Gaussian blur sigma for multiband (lower = sharper)
+  feather_sigma: 10.0  # Gaussian blur sigma for feather blending (lower = sharper)
 
 # Debug settings
 debug:

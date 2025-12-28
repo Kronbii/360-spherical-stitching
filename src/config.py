@@ -18,6 +18,7 @@ class MatchingConfig:
     ransac_reproj_threshold: float = 3.0  # RANSAC reprojection threshold
     min_inliers: int = 60  # Minimum number of inliers required
     use_clahe: bool = False  # Use CLAHE for feature extraction
+    disable_circular_closure: bool = False  # Disable circular closure detection (use if video doesn't loop)
 
 
 @dataclass
@@ -66,6 +67,9 @@ class VideoExtractionConfig:
     num_frames: int = 40  # Number of frames for uniform method
     frame_interval: int = 15  # Frame interval for interval method
     extract_fps: float = 2.0  # Target FPS for fps method
+    min_frames: int = 20  # Minimum frames for motion method
+    max_frames: int = 100  # Maximum frames for motion method
+    motion_threshold: float = 0.02  # Motion threshold for motion method (0-1)
 
 
 @dataclass
@@ -101,6 +105,7 @@ class PipelineConfig:
                 "ransac_reproj_threshold": self.matching.ransac_reproj_threshold,
                 "min_inliers": self.matching.min_inliers,
                 "use_clahe": self.matching.use_clahe,
+                "disable_circular_closure": self.matching.disable_circular_closure,
             },
             "intrinsics": {
                 "hfov_deg": self.intrinsics.hfov_deg,
@@ -126,6 +131,9 @@ class PipelineConfig:
                 "num_frames": self.video_extraction.num_frames,
                 "frame_interval": self.video_extraction.frame_interval,
                 "extract_fps": self.video_extraction.extract_fps,
+                "min_frames": self.video_extraction.min_frames,
+                "max_frames": self.video_extraction.max_frames,
+                "motion_threshold": self.video_extraction.motion_threshold,
             },
         }
 
@@ -155,12 +163,15 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         raise ValueError(f"Config file must contain a YAML dictionary, got {type(data)}")
     
     # Extract top-level paths
-    input_dir = Path(data.get('input_dir', ''))
+    input_dir_str = data.get('input_dir')
     video_path = data.get('video')
     output_dir = Path(data.get('output_dir', ''))
     
-    if not output_dir:
+    if not output_dir or str(output_dir) == '.':
         raise ValueError("'output_dir' is required in config file")
+    
+    # Check if input_dir was actually specified (not just empty string)
+    input_dir = Path(input_dir_str) if input_dir_str else None
     
     if not input_dir and not video_path:
         raise ValueError("Either 'input_dir' or 'video' must be specified in config file")
@@ -172,6 +183,9 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
     # For now, we'll use a placeholder that gets replaced
     if video_path:
         input_dir = Path(video_path)  # Temporary, will be replaced with frames dir
+    else:
+        # Ensure input_dir is a Path object
+        input_dir = Path(input_dir)
     
     # Extract nested configs
     matching_data = data.get('matching', {})
@@ -189,6 +203,7 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         ransac_reproj_threshold=matching_data.get('ransac_reproj_threshold', 3.0),
         min_inliers=matching_data.get('min_inliers', 60),
         use_clahe=matching_data.get('use_clahe', False),
+        disable_circular_closure=matching_data.get('disable_circular_closure', False),
     )
     
     calib_json_str = intrinsics_data.get('calib_json')
@@ -223,6 +238,9 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         num_frames=video_extraction_data.get('num_frames', 40),
         frame_interval=video_extraction_data.get('frame_interval', 15),
         extract_fps=video_extraction_data.get('extract_fps', 2.0),
+        min_frames=video_extraction_data.get('min_frames', 20),
+        max_frames=video_extraction_data.get('max_frames', 100),
+        motion_threshold=video_extraction_data.get('motion_threshold', 0.02),
     )
     
     config = PipelineConfig(

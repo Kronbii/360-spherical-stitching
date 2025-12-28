@@ -59,6 +59,7 @@ from .warp_sphere import (
     estimate_panorama_coverage,
     save_debug_warps,
     warp_all_images,
+    warp_and_blend_sequential,
 )
 
 logger = logging.getLogger(__name__)
@@ -440,33 +441,34 @@ def run_pipeline(config: PipelineConfig) -> Path:
     # ============================================================
     # STEP 5b: Detect and trim circular closure (if >360° captured)
     # ============================================================
-    trim_idx = detect_circular_closure(
-        match_images,
-        match_results,
-        global_rotations,
-        config.matching,
-        scale=match_scale
-    )
-    
-    if trim_idx is not None and trim_idx < len(image_infos) - 1:
-        # Trim excess frames after closure point
-        match_images, image_infos, match_results, global_rotations = trim_excess_frames(
+    if config.matching.disable_circular_closure:
+        logger.info("Circular closure detection is disabled")
+        trim_idx = None
+    else:
+        trim_idx = detect_circular_closure(
             match_images,
-            image_infos,
             match_results,
             global_rotations,
-            trim_idx
+            config.matching,
+            scale=match_scale
         )
         
-        logger.info(f"Circular closure detected: trimmed to {len(image_infos)} frames")
+        if trim_idx is not None and trim_idx < len(image_infos) - 1:
+            # Trim excess frames after closure point
+            match_images, image_infos, match_results, global_rotations = trim_excess_frames(
+                match_images,
+                image_infos,
+                match_results,
+                global_rotations,
+                trim_idx
+            )
+            
+            logger.info(f"Circular closure detected: trimmed to {len(image_infos)} frames")
     
     # ============================================================
     # STEP 6: Load full-resolution images and warp
     # ============================================================
     logger.info("\n[STEP 6] Warping images to equirectangular projection...")
-    
-    # Load full resolution images
-    full_images = load_images(image_infos, max_width=None)
     
     # Re-estimate calibration at full resolution
     calib_full = estimate_intrinsics(
@@ -476,39 +478,120 @@ def run_pipeline(config: PipelineConfig) -> Path:
         config.intrinsics
     )
     
-    # If we have distortion coefficients, undistort full-res images too
-    if calib_full.dist_coeffs and any(d != 0 for d in calib_full.dist_coeffs):
-        logger.info("Undistorting full-resolution images...")
-        full_images, calib_full = undistort_images(full_images, calib_full)
+    # Check if we need undistortion
+    needs_undistort = calib_full.dist_coeffs and any(d != 0 for d in calib_full.dist_coeffs)
+    if needs_undistort:
+        logger.info("Will undistort full-resolution images during sequential processing...")
     
-    # Warp images
-    warped_images, masks = warp_all_images(
-        full_images,
-        global_rotations,
-        calib_full,
-        config.output
-    )
+    # Use sequential processing for "none" blending (memory-efficient)
+    # This avoids loading all full-resolution images and warped images into memory at once
+    use_sequential = config.blending.method == "none"
     
-    # Coverage statistics
-    coverage = estimate_panorama_coverage(masks)
-    logger.info(f"Panorama coverage: {coverage['coverage_percent']:.1f}%")
+    if use_sequential:
+        logger.info("Using sequential processing for memory efficiency...")
+        
+        # Initialize panorama for "none" blending (accumulates result)
+        H, W = config.output.pano_height, config.output.pano_width
+        panorama = np.zeros((H, W, 3), dtype=np.uint8)
+        best_mask_value = np.zeros((H, W), dtype=np.uint8)
+        
+        # Create undistort function if needed
+        undistort_func = None
+        if needs_undistort:
+            from .intrinsics import undistort_image_single
+            import cv2
+            
+            # Compute undistortion maps once (they're the same for all images)
+            dist_coeffs = np.array(calib_full.dist_coeffs, dtype=np.float64)
+            K = calib_full.K
+            h, w = image_height, image_width
+            new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist_coeffs, (w, h), alpha=0)
+            map1, map2 = cv2.initUndistortRectifyMap(K, dist_coeffs, None, new_K, (w, h), cv2.CV_32FC1)
+            
+            # Update calibration to use new K matrix (no distortion after undistortion)
+            from .config import CalibrationData
+            calib_full = CalibrationData(
+                fx=new_K[0, 0],
+                fy=new_K[1, 1],
+                cx=new_K[0, 2],
+                cy=new_K[1, 2],
+                dist_coeffs=None
+            )
+            
+            # Create undistort function using precomputed maps
+            def undistort_func(img: np.ndarray) -> np.ndarray:
+                return cv2.remap(img, map1, map2, cv2.INTER_LINEAR)
+        
+        # Sequential warp and blend callback
+        def blend_callback(warped: np.ndarray, mask: np.ndarray, idx: int):
+            nonlocal panorama, best_mask_value
+            is_better = mask > best_mask_value
+            panorama[is_better] = warped[is_better]
+            best_mask_value = np.maximum(best_mask_value, mask)
+        
+        # Process images sequentially
+        masks = warp_and_blend_sequential(
+            image_infos,
+            global_rotations,
+            calib_full,
+            config.output,
+            blend_callback,
+            image_width,
+            image_height,
+            undistort_func
+        )
+        
+        warped_images = None  # Not stored for "none" blending
+        
+    else:
+        # For multiband/feather blending, we need all images in memory
+        # Load full resolution images
+        full_images = load_images(image_infos, max_width=None)
+        
+        # If we have distortion coefficients, undistort full-res images too
+        if needs_undistort:
+            logger.info("Undistorting full-resolution images...")
+            full_images, calib_full = undistort_images(full_images, calib_full)
+        
+        # Warp images
+        warped_images, masks = warp_all_images(
+            full_images,
+            global_rotations,
+            calib_full,
+            config.output
+        )
+        
+        # Free full_images from memory
+        del full_images
+        
+        # Coverage statistics
+        coverage = estimate_panorama_coverage(masks)
+        logger.info(f"Panorama coverage: {coverage['coverage_percent']:.1f}%")
+        
+        # Save debug warps if enabled
+        if config.debug.enabled and config.debug.save_warped_frames > 0:
+            save_debug_warps(warped_images, masks, config.output_dir, config.debug.save_warped_frames)
+        
+        # ============================================================
+        # STEP 8: Blend panorama
+        # ============================================================
+        logger.info("\n[STEP 7] Blending panorama...")
+        
+        panorama = blend_panorama(warped_images, masks, config.blending)
+        
+        # Free warped_images from memory
+        del warped_images
     
-    # Save debug warps if enabled
-    if config.debug.enabled and config.debug.save_warped_frames > 0:
-        save_debug_warps(warped_images, masks, config.output_dir, config.debug.save_warped_frames)
-    
-    # ============================================================
-    # STEP 8: Blend panorama
-    # ============================================================
-    logger.info("\n[STEP 7] Blending panorama...")
-    
-    panorama = blend_panorama(warped_images, masks, config.blending)
+    # Coverage statistics (for "none" blending)
+    if config.blending.method == "none":
+        coverage = estimate_panorama_coverage(masks)
+        logger.info(f"Panorama coverage: {coverage['coverage_percent']:.1f}%")
     
     # Fill any gaps
     panorama = fill_gaps(panorama, masks)
     
-    # Save debug seam visualization
-    if config.debug.enabled:
+    # Save debug seam visualization (only if we have warped_images stored)
+    if config.debug.enabled and config.debug.save_seams and warped_images is not None:
         seam_vis = create_seam_visualization(warped_images, masks)
         cv2.imwrite(str(config.output_dir / "debug" / "seams.jpg"), seam_vis)
     

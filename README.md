@@ -1,4 +1,4 @@
-   j# 360° Spherical Panorama Stitching
+# 360° Spherical Panorama Stitching
 
 Create stunning 360° equirectangular panoramas from a sequence of phone photos captured on a tripod with pure rotation.
 
@@ -40,62 +40,107 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Basic Usage
+The pipeline uses a YAML configuration file for all settings. Create a `config.yaml` file (see `config.yaml` in the repository for an example) and run:
 
 ```bash
-python run.py --input_dir ./photos --output_dir ./output
+python run.py config.yaml
 ```
 
-### Full Options
+### Configuration File
 
-```bash
-python run.py \
-    --input_dir ./photos \
-    --output_dir ./output \
-    --pano_width 4096 \
-    --match_width 1600 \
-    --blend multiband \
-    --hfov_deg 65 \
-    --debug
+The configuration file supports all pipeline parameters. See `config.yaml` for a complete example with all options documented.
+
+**Basic example (`config.yaml`):**
+```yaml
+# Input source (choose one)
+input_dir: ./photos  # Directory containing input images
+# OR use video:
+# video: ./video.mov
+
+# Required: Output directory
+output_dir: ./output
+
+# Output settings
+output:
+  pano_width: 4096  # Panorama width in pixels (height = width/2)
+  output_format: jpg  # Options: jpg, png
+  jpg_quality: 95  # JPEG quality (1-100)
+
+# Feature matching settings
+matching:
+  match_width: 1600  # Width for downscaled images during matching (or null for full resolution)
+  match_full_res: false  # If true, use full resolution (match_width is ignored)
+  orb_nfeatures: 3000  # Number of ORB features to detect
+  ratio_test_threshold: 0.75  # Lowe's ratio test threshold
+  ransac_reproj_threshold: 3.0  # RANSAC reprojection threshold
+  min_inliers: 60  # Minimum RANSAC inliers required
+  use_clahe: false  # Apply CLAHE for feature extraction
+  disable_circular_closure: false  # Set to true if video doesn't loop
+
+# Camera intrinsics
+intrinsics:
+  hfov_deg: 65.0  # Horizontal field of view in degrees (fallback if EXIF unavailable)
+  calib_json: null  # Path to calibration JSON file (optional)
+
+# Blending settings
+blending:
+  method: multiband  # Options: multiband, feather, none
+  multiband_levels: 5  # Number of pyramid levels for multiband blending
+  multiband_sigma: 30.0  # Gaussian blur sigma for multiband (lower = sharper)
+  feather_sigma: 50.0  # Gaussian blur sigma for feather blending (lower = sharper)
+
+# Video extraction (only used if 'video' is specified)
+video_extraction:
+  method: uniform  # Options: uniform, interval, fps, motion
+  num_frames: 40  # For 'uniform' method
+  frame_interval: 15  # For 'interval' method
+  extract_fps: 2.0  # For 'fps' method
+
+# Debug settings
+debug:
+  enabled: false  # Enable debug mode (saves intermediate visualizations)
+  save_matches: true  # Save feature match visualizations
+  save_warped_frames: 0  # Number of warped frames to save (0 = none)
+  save_seams: true  # Save blending masks
+  verbose_logging: true  # Enable verbose logging
 ```
-
-### Command Line Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--input_dir`, `-i` | *required* | Directory containing input images |
-| `--output_dir`, `-o` | *required* | Output directory for panorama and viewer |
-| `--pano_width` | 4096 | Output panorama width (height = width/2) |
-| `--match_width` | 1600 | Image width for feature matching |
-| `--blend` | multiband | Blending method: `multiband` or `feather` |
-| `--blend_levels` | 5 | Pyramid levels for multiband blending |
-| `--hfov_deg` | 65 | Horizontal FOV fallback (if no EXIF) |
-| `--calib_json` | None | Camera calibration JSON file |
-| `--clahe` | False | Apply CLAHE for feature extraction |
-| `--min_inliers` | 60 | Minimum RANSAC inliers required |
-| `--output_format` | jpg | Output format: `jpg` or `png` |
-| `--debug` | False | Save debug visualizations |
 
 ### Examples
 
 **High resolution panorama:**
-```bash
-python run.py -i ./photos -o ./output --pano_width 8192
+```yaml
+output:
+  pano_width: 8192
 ```
 
 **Fast processing with feather blending:**
-```bash
-python run.py -i ./photos -o ./output --blend feather --match_width 1200
+```yaml
+matching:
+  match_width: 1200
+blending:
+  method: feather
 ```
 
 **Debug mode with CLAHE (for low contrast images):**
-```bash
-python run.py -i ./photos -o ./output --clahe --debug
+```yaml
+matching:
+  use_clahe: true
+debug:
+  enabled: true
 ```
 
 **With custom calibration:**
-```bash
-python run.py -i ./photos -o ./output --calib_json ./camera_calib.json
+```yaml
+intrinsics:
+  calib_json: ./camera_calib.json
+```
+
+**Processing a video:**
+```yaml
+video: ./video.mov
+video_extraction:
+  method: fps
+  extract_fps: 5.0
 ```
 
 ## Tips for Capturing Good Panoramas
@@ -141,7 +186,7 @@ output_dir/
 ├── viewer/
 │   ├── index.html         # Interactive 360° viewer
 │   └── panorama.jpg       # Copy of panorama
-└── debug/                 # (if --debug enabled)
+└── debug/                 # (if debug.enabled: true in config)
     ├── matches/           # Feature match visualizations
     ├── warped/            # Warped frame previews
     └── seams.jpg          # Seam visualization
@@ -222,8 +267,8 @@ If you have camera calibration data, create a JSON file:
 - **Cause**: Insufficient feature matches between images
 - **Solutions**:
   - Ensure 30-50% overlap between shots
-  - Try `--clahe` flag for low contrast scenes
-  - Reduce `--min_inliers` (e.g., 40) for difficult scenes
+  - Enable `use_clahe: true` in config for low contrast scenes
+  - Reduce `min_inliers` (e.g., 40) in config for difficult scenes
   - Check image order (may be misordered)
 
 ### Visible Seams
@@ -231,8 +276,8 @@ If you have camera calibration data, create a JSON file:
 - **Cause**: Exposure differences or insufficient blending
 - **Solutions**:
   - Lock camera exposure before shooting
-  - Use `--blend multiband` (default)
-  - Increase `--blend_levels` (e.g., 6 or 7)
+  - Use `method: multiband` in blending config (default)
+  - Increase `multiband_levels` (e.g., 6 or 7) in config
 
 ### Panorama Not Loading in Viewer
 

@@ -12,7 +12,8 @@ Coordinate system:
 """
 
 import logging
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Tuple, Optional, Callable
 
 import cv2
 import numpy as np
@@ -58,20 +59,15 @@ def spherical_to_world_directions(theta: np.ndarray, phi: np.ndarray) -> Tuple[n
     r_world = [sin(theta)*cos(phi), sin(phi), cos(theta)*cos(phi)]
     
     Args:
-        theta: Azimuth angles.
-        phi: Elevation angles.
+        theta: Azimuth angle grid (H, W) in radians.
+        phi: Elevation angle grid (H, W) in radians.
         
     Returns:
-        Tuple of (x, y, z) direction components.
+        Tuple of (x, y, z) world direction components, each of shape (H, W).
     """
-    cos_phi = np.cos(phi)
-    sin_phi = np.sin(phi)
-    cos_theta = np.cos(theta)
-    sin_theta = np.sin(theta)
-    
-    x = sin_theta * cos_phi
-    y = sin_phi
-    z = cos_theta * cos_phi
+    x = np.sin(theta) * np.cos(phi)
+    y = np.sin(phi)
+    z = np.cos(theta) * np.cos(phi)
     
     return x, y, z
 
@@ -143,12 +139,7 @@ def compute_warp_maps(
         (map_y >= margin) & (map_y < image_height - margin)
     )
     
-    # Combined valid mask
     valid_mask = valid_z & valid_bounds
-    
-    # Set invalid pixels to -1 (cv2.remap will use border mode)
-    map_x = np.where(valid_mask, map_x, -1).astype(np.float32)
-    map_y = np.where(valid_mask, map_y, -1).astype(np.float32)
     
     return map_x, map_y, valid_mask
 
@@ -193,7 +184,7 @@ def warp_image_to_equirectangular(
     )
     
     # Convert mask to uint8
-    mask = (valid_mask * 255).astype(np.uint8)
+    mask = (valid_mask.astype(np.uint8) * 255)
     
     return warped, mask
 
@@ -246,76 +237,148 @@ def warp_all_images(
     return warped_images, masks
 
 
-def estimate_panorama_coverage(masks: List[np.ndarray]) -> dict:
+def warp_and_blend_sequential(
+    image_infos: List,
+    global_rotations: List[np.ndarray],
+    calib: CalibrationData,
+    output_config: OutputConfig,
+    blend_callback: Callable[[np.ndarray, np.ndarray, int], None],
+    image_width: int,
+    image_height: int,
+    undistort_func: Optional[Callable[[np.ndarray], np.ndarray]] = None
+) -> List[np.ndarray]:
     """
-    Estimate panorama coverage statistics.
+    Warp images sequentially and call blend_callback for each warped image.
+    
+    This is memory-efficient as it only keeps one image in memory at a time.
     
     Args:
-        masks: List of warped image masks.
+        image_infos: List of ImageInfo objects.
+        global_rotations: List of global rotation matrices.
+        calib: Camera calibration.
+        output_config: Output configuration.
+        blend_callback: Function(warped_image, mask, index) called for each warped image.
+        image_width: Source image width.
+        image_height: Source image height.
+        undistort_func: Optional function to undistort images (if provided).
+        
+    Returns:
+        List of masks (for coverage statistics).
+    """
+    from .io_utils import load_image
+    
+    W = output_config.pano_width
+    H = output_config.pano_height
+    
+    logger.info(f"Sequentially warping {len(image_infos)} images to equirectangular ({W}x{H})...")
+    
+    # Precompute theta/phi grids once
+    theta, phi = create_equirectangular_grid(W, H)
+    
+    masks = []
+    
+    for i, (image_info, R) in enumerate(zip(image_infos, global_rotations)):
+        if (i + 1) % 10 == 0:
+            logger.info(f"Processing image {i+1}/{len(image_infos)}...")
+        else:
+            logger.debug(f"Warping image {i+1}/{len(image_infos)}...")
+        
+        # Load image
+        image = load_image(image_info.path, max_width=None)
+        
+        # Undistort if needed
+        if undistort_func:
+            image = undistort_func(image)
+        
+        # Warp image
+        warped, mask = warp_image_to_equirectangular(
+            image, R, calib, theta, phi, (H, W)
+        )
+        
+        # Call blend callback
+        blend_callback(warped, mask, i)
+        
+        # Store mask for coverage statistics
+        masks.append(mask)
+        
+        # Log coverage
+        coverage = np.sum(mask > 0) / (W * H) * 100
+        logger.debug(f"  Image {i+1}: {coverage:.1f}% panorama coverage")
+        
+        # Free memory explicitly
+        del image, warped
+    
+    logger.info(f"Sequentially warped all {len(image_infos)} images")
+    
+    return masks
+
+
+def estimate_panorama_coverage(masks: List[np.ndarray]) -> dict:
+    """
+    Estimate panorama coverage from masks.
+    
+    Args:
+        masks: List of valid masks (uint8, 0 or 255).
         
     Returns:
         Dictionary with coverage statistics.
     """
     if not masks:
-        return {}
+        return {"coverage_percent": 0.0, "total_pixels": 0, "covered_pixels": 0}
     
-    H, W = masks[0].shape
-    total_pixels = W * H
-    
-    # Combined mask (any image covers this pixel)
-    combined = np.zeros((H, W), dtype=np.uint8)
+    # Combine all masks
+    combined = np.zeros_like(masks[0])
     for mask in masks:
         combined = np.maximum(combined, mask)
     
+    H, W = combined.shape
+    total_pixels = H * W
     covered_pixels = np.sum(combined > 0)
-    coverage_percent = covered_pixels / total_pixels * 100
-    
-    # Overlap analysis (pixels covered by multiple images)
-    overlap_count = np.zeros((H, W), dtype=np.int32)
-    for mask in masks:
-        overlap_count += (mask > 0).astype(np.int32)
-    
-    single_coverage = np.sum(overlap_count == 1)
-    multi_coverage = np.sum(overlap_count > 1)
+    coverage_percent = (covered_pixels / total_pixels) * 100
     
     return {
-        "total_pixels": total_pixels,
-        "covered_pixels": int(covered_pixels),
         "coverage_percent": coverage_percent,
-        "single_coverage_pixels": int(single_coverage),
-        "multi_coverage_pixels": int(multi_coverage),
-        "max_overlap": int(np.max(overlap_count)),
+        "total_pixels": total_pixels,
+        "covered_pixels": covered_pixels,
     }
 
 
 def save_debug_warps(
     warped_images: List[np.ndarray],
     masks: List[np.ndarray],
-    output_dir,
-    n_images: int = 3
+    output_dir: Path,
+    num_to_save: int = 5
 ) -> None:
     """
-    Save debug visualizations of warped images.
+    Save sample warped images for debugging.
     
     Args:
         warped_images: List of warped images.
         masks: List of masks.
         output_dir: Output directory.
-        n_images: Number of images to save.
+        num_to_save: Number of images to save (evenly spaced).
     """
-    from pathlib import Path
+    if not warped_images:
+        return
     
-    debug_dir = Path(output_dir) / "debug" / "warped"
+    debug_dir = output_dir / "debug" / "warped"
     debug_dir.mkdir(parents=True, exist_ok=True)
     
-    for i in range(min(n_images, len(warped_images))):
-        # Save warped image
-        cv2.imwrite(str(debug_dir / f"warped_{i:03d}.jpg"), warped_images[i])
-        
-        # Save mask
-        cv2.imwrite(str(debug_dir / f"mask_{i:03d}.png"), masks[i])
-        
-        logger.debug(f"Saved debug warp for image {i}")
+    n = len(warped_images)
+    step = max(1, n // num_to_save)
+    indices = list(range(0, n, step))[:num_to_save]
     
-    logger.info(f"Saved {min(n_images, len(warped_images))} debug warped images to {debug_dir}")
-
+    for idx in indices:
+        # Combine warped image with mask overlay
+        warped = warped_images[idx].copy()
+        mask = masks[idx]
+        
+        # Overlay mask as semi-transparent red
+        mask_overlay = np.zeros_like(warped)
+        mask_overlay[:, :, 2] = mask  # Red channel
+        warped_overlay = cv2.addWeighted(warped, 0.7, mask_overlay, 0.3, 0)
+        
+        output_path = debug_dir / f"warped_{idx:04d}.jpg"
+        cv2.imwrite(str(output_path), warped_overlay)
+    
+    logger.info(f"Saved {len(indices)} warped images to {debug_dir}")

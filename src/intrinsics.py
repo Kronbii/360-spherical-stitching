@@ -73,8 +73,7 @@ def estimate_from_calib_json(calib_path: Path, image_width: int, image_height: i
             fy=fy,
             cx=cx,
             cy=cy,
-            dist_coeffs=dist_coeffs,
-            source=f"calibration JSON: {calib_path.name}"
+            dist_coeffs=dist_coeffs
         )
         
         logger.info(f"Loaded calibration from {calib_path}")
@@ -129,8 +128,7 @@ def estimate_from_35mm_equivalent(exif_data: dict, image_width: int, image_heigh
         fx=fx_pixels,
         fy=fy_pixels,
         cx=cx,
-        cy=cy,
-        source=f"EXIF FocalLengthIn35mmFilm: {f35}mm (estimated HFOV: {hfov:.1f}°)"
+        cy=cy
     )
     
     logger.info(f"Estimated intrinsics from 35mm equivalent focal length")
@@ -184,8 +182,7 @@ def estimate_from_focal_length(exif_data: dict, image_width: int, image_height: 
         fx=fx_pixels,
         fy=fy_pixels,
         cx=cx,
-        cy=cy,
-        source=f"EXIF FocalLength: {focal_length}mm, SensorWidth: {sensor_width}mm"
+        cy=cy
     )
     
     return calib
@@ -215,8 +212,7 @@ def estimate_from_hfov(hfov_deg: float, image_width: int, image_height: int) -> 
         fx=fx,
         fy=fy,
         cx=cx,
-        cy=cy,
-        source=f"HFOV fallback: {hfov_deg}° (user-specified or default)"
+        cy=cy
     )
     
     logger.info(f"Using HFOV fallback for intrinsics")
@@ -322,7 +318,7 @@ def save_intrinsics_report(
             "dist_coeffs": calib.dist_coeffs,
         },
         "camera_matrix_K": calib.K.tolist(),
-        "estimation_source": calib.source,
+        "estimation_source": "estimated",
         "image_dimensions": {
             "width": image_width,
             "height": image_height,
@@ -383,12 +379,50 @@ def undistort_images(
         fy=new_K[1, 1],
         cx=new_K[0, 2],
         cy=new_K[1, 2],
-        dist_coeffs=None,  # No distortion after undistortion
-        source=f"undistorted from: {calib.source}"
+        dist_coeffs=None  # No distortion after undistortion
     )
     
     logger.info(f"Undistorted {len(images)} images")
     logger.info(f"New intrinsics: fx={new_calib.fx:.2f}, fy={new_calib.fy:.2f}")
     
     return undistorted, new_calib
+
+
+def undistort_image_single(
+    image: np.ndarray,
+    calib: CalibrationData,
+    image_width: int,
+    image_height: int
+) -> np.ndarray:
+    """
+    Undistort a single image if distortion coefficients are available.
+    
+    This is a memory-efficient version for sequential processing.
+    
+    Args:
+        image: Single image as numpy array.
+        calib: CalibrationData with distortion coefficients.
+        image_width: Image width in pixels.
+        image_height: Image height in pixels.
+        
+    Returns:
+        Undistorted image.
+    """
+    if calib.dist_coeffs is None or all(d == 0 for d in calib.dist_coeffs):
+        return image
+    
+    dist_coeffs = np.array(calib.dist_coeffs, dtype=np.float64)
+    K = calib.K
+    
+    # Get optimal new camera matrix
+    h, w = image.shape[:2]
+    new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist_coeffs, (w, h), alpha=0)
+    
+    # Compute undistortion maps
+    map1, map2 = cv2.initUndistortRectifyMap(K, dist_coeffs, None, new_K, (w, h), cv2.CV_32FC1)
+    
+    # Undistort image
+    undistorted = cv2.remap(image, map1, map2, cv2.INTER_LINEAR)
+    
+    return undistorted
 

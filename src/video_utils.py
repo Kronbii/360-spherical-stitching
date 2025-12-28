@@ -199,11 +199,14 @@ def extract_frames_fps(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / video_fps
     
-    # Calculate frame interval
-    frame_interval = max(1, int(video_fps / target_fps))
+    # Calculate frame interval (round to nearest integer for best approximation)
+    frame_interval = max(1, round(video_fps / target_fps))
     expected_frames = int(duration * target_fps)
     
-    logger.info(f"Extracting at {target_fps} fps (every {frame_interval} frames, ~{expected_frames} total)...")
+    # Calculate actual extraction FPS for logging
+    actual_extraction_fps = video_fps / frame_interval
+    
+    logger.info(f"Extracting at {target_fps} fps target (every {frame_interval} frames, actual: ~{actual_extraction_fps:.1f} fps, ~{expected_frames} total)...")
     
     cap.release()
     
@@ -278,8 +281,11 @@ def extract_keyframes_motion(
     cumulative_motion = np.cumsum([s[1] for s in motion_scores])
     total_motion = cumulative_motion[-1]
     
-    # Select frames at regular motion intervals
-    num_frames = min(max_frames, max(min_frames, int(total_motion / motion_threshold)))
+    # Calculate number of frames to extract based on motion distribution
+    # Use max_frames as the upper bound, but try to select frames based on motion density
+    # Instead of using total_motion/motion_threshold (which can be huge), 
+    # we'll select frames evenly spaced in cumulative motion space, capped by max_frames
+    num_frames = min(max_frames, max(min_frames, len(motion_scores) // 10))
     motion_intervals = np.linspace(0, total_motion, num_frames)
     
     selected_indices = []
@@ -321,6 +327,9 @@ def extract_frames_from_video(
     num_frames: int = 30,
     frame_interval: int = 15,
     target_fps: float = 2.0,
+    min_frames: int = 20,
+    max_frames: int = 100,
+    motion_threshold: float = 0.02,
     quality: int = 95
 ) -> List[Path]:
     """
@@ -333,6 +342,9 @@ def extract_frames_from_video(
         num_frames: Number of frames for uniform method.
         frame_interval: Frame interval for interval method.
         target_fps: Target FPS for fps method.
+        min_frames: Minimum frames for motion method.
+        max_frames: Maximum frames for motion method.
+        motion_threshold: Motion threshold for motion method (0-1).
         quality: JPEG quality (1-100).
         
     Returns:
@@ -355,7 +367,13 @@ def extract_frames_from_video(
     elif method == "fps":
         return extract_frames_fps(video_path, output_dir, target_fps, quality)
     elif method == "motion":
-        return extract_keyframes_motion(video_path, output_dir, quality=quality)
+        return extract_keyframes_motion(
+            video_path, output_dir,
+            min_frames=min_frames,
+            max_frames=max_frames,
+            motion_threshold=motion_threshold,
+            quality=quality
+        )
     else:
         raise ValueError(f"Unknown extraction method: {method}")
 
