@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 import json
+import yaml
 
 
 @dataclass
@@ -51,11 +52,20 @@ class OutputConfig:
 @dataclass
 class DebugConfig:
     """Configuration for debug outputs."""
-    enabled: bool = False
-    save_matches: bool = True  # Save match visualizations
-    save_warped_frames: int = 3  # Number of warped frames to save (0 to disable)
-    save_masks: bool = True  # Save blending masks
+    enabled: bool = False  # Enable debug mode
+    save_matches: bool = True  # Save feature match visualizations
+    save_warped_frames: int = 0  # Number of warped frames to save (0 = none)
+    save_seams: bool = True  # Save blending masks
     verbose_logging: bool = True  # Enable verbose logging
+
+
+@dataclass
+class VideoExtractionConfig:
+    """Configuration for video frame extraction."""
+    method: str = "uniform"  # 'uniform', 'interval', 'fps', or 'motion'
+    num_frames: int = 40  # Number of frames for uniform method
+    frame_interval: int = 15  # Frame interval for interval method
+    extract_fps: float = 2.0  # Target FPS for fps method
 
 
 @dataclass
@@ -68,6 +78,7 @@ class PipelineConfig:
     blending: BlendingConfig = field(default_factory=BlendingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
+    video_extraction: VideoExtractionConfig = field(default_factory=VideoExtractionConfig)
     
     def __post_init__(self):
         """Convert paths to Path objects if needed."""
@@ -110,7 +121,128 @@ class PipelineConfig:
             "debug": {
                 "enabled": self.debug.enabled,
             },
+            "video_extraction": {
+                "method": self.video_extraction.method,
+                "num_frames": self.video_extraction.num_frames,
+                "frame_interval": self.video_extraction.frame_interval,
+                "extract_fps": self.video_extraction.extract_fps,
+            },
         }
+
+
+def load_config_from_yaml(config_path: Path) -> PipelineConfig:
+    """
+    Load pipeline configuration from a YAML file.
+    
+    Args:
+        config_path: Path to YAML configuration file.
+        
+    Returns:
+        PipelineConfig object.
+        
+    Raises:
+        FileNotFoundError: If config file doesn't exist.
+        ValueError: If config file is invalid.
+    """
+    config_path = Path(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        data = yaml.safe_load(f)
+    
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file must contain a YAML dictionary, got {type(data)}")
+    
+    # Extract top-level paths
+    input_dir = Path(data.get('input_dir', ''))
+    video_path = data.get('video')
+    output_dir = Path(data.get('output_dir', ''))
+    
+    if not output_dir:
+        raise ValueError("'output_dir' is required in config file")
+    
+    if not input_dir and not video_path:
+        raise ValueError("Either 'input_dir' or 'video' must be specified in config file")
+    
+    if input_dir and video_path:
+        raise ValueError("Cannot specify both 'input_dir' and 'video' in config file")
+    
+    # If video is specified, input_dir will be set later (after frame extraction)
+    # For now, we'll use a placeholder that gets replaced
+    if video_path:
+        input_dir = Path(video_path)  # Temporary, will be replaced with frames dir
+    
+    # Extract nested configs
+    matching_data = data.get('matching', {})
+    intrinsics_data = data.get('intrinsics', {})
+    blending_data = data.get('blending', {})
+    output_data = data.get('output', {})
+    debug_data = data.get('debug', {})
+    video_extraction_data = data.get('video_extraction', {})
+    
+    # Build config objects
+    matching = MatchingConfig(
+        match_width=None if matching_data.get('match_full_res', False) else matching_data.get('match_width', 1600),
+        orb_nfeatures=matching_data.get('orb_nfeatures', 3000),
+        ratio_test_threshold=matching_data.get('ratio_test_threshold', 0.75),
+        ransac_reproj_threshold=matching_data.get('ransac_reproj_threshold', 3.0),
+        min_inliers=matching_data.get('min_inliers', 60),
+        use_clahe=matching_data.get('use_clahe', False),
+    )
+    
+    calib_json_str = intrinsics_data.get('calib_json')
+    intrinsics = IntrinsicsConfig(
+        hfov_deg=intrinsics_data.get('hfov_deg', 65.0),
+        calib_json=Path(calib_json_str) if calib_json_str else None,
+    )
+    
+    blending = BlendingConfig(
+        method=blending_data.get('method', 'multiband'),
+        multiband_levels=blending_data.get('multiband_levels', 5),
+        multiband_sigma=blending_data.get('multiband_sigma', 30.0),
+        feather_sigma=blending_data.get('feather_sigma', 50.0),
+    )
+    
+    output = OutputConfig(
+        pano_width=output_data.get('pano_width', 4096),
+        output_format=output_data.get('output_format', 'jpg'),
+        jpg_quality=output_data.get('jpg_quality', 95),
+    )
+    
+    debug = DebugConfig(
+        enabled=debug_data.get('enabled', False),
+        save_matches=debug_data.get('save_matches', True),
+        save_warped_frames=debug_data.get('save_warped_frames', 0),
+        save_seams=debug_data.get('save_seams', True),
+        verbose_logging=debug_data.get('verbose_logging', True),
+    )
+    
+    video_extraction = VideoExtractionConfig(
+        method=video_extraction_data.get('method', 'uniform'),
+        num_frames=video_extraction_data.get('num_frames', 40),
+        frame_interval=video_extraction_data.get('frame_interval', 15),
+        extract_fps=video_extraction_data.get('extract_fps', 2.0),
+    )
+    
+    config = PipelineConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        matching=matching,
+        intrinsics=intrinsics,
+        blending=blending,
+        output=output,
+        debug=debug,
+        video_extraction=video_extraction,
+    )
+    
+    # Store video path if specified (for later use)
+    if video_path:
+        config._video_path = Path(video_path)
+    else:
+        config._video_path = None
+    
+    return config
 
 
 @dataclass
@@ -118,43 +250,16 @@ class CalibrationData:
     """Camera calibration data loaded from JSON or estimated."""
     fx: float  # Focal length in pixels (x)
     fy: float  # Focal length in pixels (y)
-    cx: float  # Principal point x
-    cy: float  # Principal point y
+    cx: float  # Principal point (x)
+    cy: float  # Principal point (y)
     dist_coeffs: Optional[list] = None  # Distortion coefficients [k1, k2, p1, p2, k3]
-    source: str = "unknown"  # How calibration was determined
     
     @property
-    def K(self):
-        """Return camera matrix as numpy array."""
+    def K(self) -> "np.ndarray":  # type: ignore
+        """Camera intrinsic matrix."""
         import numpy as np
         return np.array([
             [self.fx, 0, self.cx],
             [0, self.fy, self.cy],
             [0, 0, 1]
         ], dtype=np.float64)
-    
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "fx": self.fx,
-            "fy": self.fy,
-            "cx": self.cx,
-            "cy": self.cy,
-            "dist_coeffs": self.dist_coeffs,
-            "source": self.source,
-        }
-    
-    @classmethod
-    def from_json(cls, path: Path) -> "CalibrationData":
-        """Load calibration from JSON file."""
-        with open(path, 'r') as f:
-            data = json.load(f)
-        return cls(
-            fx=data["fx"],
-            fy=data["fy"],
-            cx=data["cx"],
-            cy=data["cy"],
-            dist_coeffs=data.get("dist_coeffs"),
-            source=f"calibration file: {path.name}"
-        )
-

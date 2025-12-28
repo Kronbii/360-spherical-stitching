@@ -28,6 +28,8 @@ from src.config import (
     MatchingConfig,
     OutputConfig,
     PipelineConfig,
+    VideoExtractionConfig,
+    load_config_from_yaml,
 )
 from src.pipeline import PanoramaStitchingError, run_pipeline
 from src.video_utils import extract_frames_from_video, get_video_info
@@ -66,19 +68,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  From images:
+  Using YAML config file (recommended):
+    python run.py --config config.yaml
+
+  Using command-line arguments:
     python run.py --input_dir ./photos --output_dir ./output
-
-  From video (recommended for phone recordings):
     python run.py --video ./video.mov --output_dir ./output
-    python run.py --video ./video.mov --output_dir ./output --num_frames 50
-    python run.py --video ./video.mov --output_dir ./output --extract_method motion
-
-  High resolution with debug output:
-    python run.py --input_dir ./photos --output_dir ./output --pano_width 8192 --debug
-
-  Fast blending mode:
-    python run.py --input_dir ./photos --output_dir ./output --blend feather
 
 Video extraction methods:
   uniform  - Extract N frames uniformly distributed (default)
@@ -95,25 +90,32 @@ Tips for capturing good panoramas:
         '''
     )
     
-    # Input source (either --input_dir OR --video)
-    input_group = parser.add_mutually_exclusive_group(required=True)
+    # Config file (alternative to all CLI args)
+    parser.add_argument(
+        '--config', '-c',
+        type=Path,
+        help='Path to YAML configuration file (alternative to CLI arguments)'
+    )
+    
+    # Input source (either --input_dir OR --video) - only required if not using --config
+    input_group = parser.add_mutually_exclusive_group(required=False)
     input_group.add_argument(
         '--input_dir', '-i',
         type=Path,
-        help='Directory containing input images'
+        help='Directory containing input images (ignored if --config is used)'
     )
     input_group.add_argument(
         '--video', '-v',
         type=Path,
-        help='Input video file (.mov, .mp4, etc.)'
+        help='Input video file (.mov, .mp4, etc.) (ignored if --config is used)'
     )
     
-    # Output directory
+    # Output directory - only required if not using --config
     parser.add_argument(
         '--output_dir', '-o',
         type=Path,
-        required=True,
-        help='Directory for output panorama and viewer'
+        required=False,
+        help='Directory for output panorama and viewer (ignored if --config is used)'
     )
     
     # Video extraction settings
@@ -234,82 +236,157 @@ def main() -> int:
     """Main entry point."""
     args = parse_args()
     
-    # Setup logging
-    setup_logging(args.debug)
-    logger = logging.getLogger(__name__)
-    
-    # Handle video input - extract frames first
-    input_dir = args.input_dir
-    frames_dir = None  # Track if we created a frames directory
-    
-    if args.video:
-        if not args.video.exists():
-            logger.error(f"Video file does not exist: {args.video}")
-            return 1
-        
-        logger.info(f"Processing video: {args.video}")
-        
-        # Get video info
+    # Load configuration from YAML file if provided
+    if args.config:
         try:
-            info = get_video_info(args.video)
+            config = load_config_from_yaml(args.config)
+            setup_logging(config.debug.enabled)
+            logger = logging.getLogger(__name__)
+            logger.info(f"Loaded configuration from: {args.config}")
         except Exception as e:
-            logger.error(f"Could not read video: {e}")
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to load config file: {e}")
             return 1
         
-        # Create frames directory inside output
-        frames_dir = args.output_dir / "frames"
-        frames_dir.mkdir(parents=True, exist_ok=True)
+        # Handle video input if specified in config
+        video_path = getattr(config, '_video_path', None)
+        frames_dir = None
         
-        logger.info(f"Extracting frames using '{args.extract_method}' method...")
+        if video_path:
+            if not video_path.exists():
+                logger.error(f"Video file does not exist: {video_path}")
+                return 1
+            
+            logger.info(f"Processing video: {video_path}")
+            
+            # Get video info
+            try:
+                info = get_video_info(video_path)
+            except Exception as e:
+                logger.error(f"Could not read video: {e}")
+                return 1
+            
+            # Create frames directory inside output
+            frames_dir = config.output_dir / "frames"
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Extracting frames using '{config.video_extraction.method}' method...")
+            
+            try:
+                extracted = extract_frames_from_video(
+                    video_path=video_path,
+                    output_dir=frames_dir,
+                    method=config.video_extraction.method,
+                    num_frames=config.video_extraction.num_frames,
+                    frame_interval=config.video_extraction.frame_interval,
+                    target_fps=config.video_extraction.extract_fps,
+                )
+                logger.info(f"Extracted {len(extracted)} frames")
+            except Exception as e:
+                logger.error(f"Frame extraction failed: {e}")
+                return 1
+            
+            config.input_dir = frames_dir
+        else:
+            # Validate input directory
+            if not config.input_dir.exists():
+                logger.error(f"Input directory does not exist: {config.input_dir}")
+                return 1
+    
+    else:
+        # Use CLI arguments (legacy mode)
+        if not args.input_dir and not args.video:
+            logger = logging.getLogger(__name__)
+            logger.error("Either --config, --input_dir, or --video must be specified")
+            return 1
         
-        try:
-            extracted = extract_frames_from_video(
-                video_path=args.video,
-                output_dir=frames_dir,
+        if not args.output_dir:
+            logger = logging.getLogger(__name__)
+            logger.error("--output_dir is required when not using --config")
+            return 1
+        
+        # Setup logging
+        setup_logging(args.debug)
+        logger = logging.getLogger(__name__)
+        
+        # Handle video input - extract frames first
+        input_dir = args.input_dir
+        frames_dir = None  # Track if we created a frames directory
+        
+        if args.video:
+            if not args.video.exists():
+                logger.error(f"Video file does not exist: {args.video}")
+                return 1
+            
+            logger.info(f"Processing video: {args.video}")
+            
+            # Get video info
+            try:
+                info = get_video_info(args.video)
+            except Exception as e:
+                logger.error(f"Could not read video: {e}")
+                return 1
+            
+            # Create frames directory inside output
+            frames_dir = args.output_dir / "frames"
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Extracting frames using '{args.extract_method}' method...")
+            
+            try:
+                extracted = extract_frames_from_video(
+                    video_path=args.video,
+                    output_dir=frames_dir,
+                    method=args.extract_method,
+                    num_frames=args.num_frames,
+                    frame_interval=args.frame_interval,
+                    target_fps=args.extract_fps,
+                )
+                logger.info(f"Extracted {len(extracted)} frames")
+            except Exception as e:
+                logger.error(f"Frame extraction failed: {e}")
+                return 1
+            
+            input_dir = frames_dir
+        else:
+            # Validate input directory
+            if not args.input_dir.exists():
+                logger.error(f"Input directory does not exist: {args.input_dir}")
+                return 1
+        
+        # Build configuration from CLI args
+        config = PipelineConfig(
+            input_dir=input_dir,
+            output_dir=args.output_dir,
+            matching=MatchingConfig(
+                match_width=None if args.match_full_res else args.match_width,
+                min_inliers=args.min_inliers,
+                use_clahe=args.clahe,
+            ),
+            intrinsics=IntrinsicsConfig(
+                hfov_deg=args.hfov_deg,
+                calib_json=args.calib_json,
+            ),
+            blending=BlendingConfig(
+                method=args.blend,
+                multiband_levels=args.blend_levels,
+                multiband_sigma=args.multiband_sigma,
+                feather_sigma=args.feather_sigma,
+            ),
+            output=OutputConfig(
+                pano_width=args.pano_width,
+                output_format=args.output_format,
+            ),
+            debug=DebugConfig(
+                enabled=args.debug,
+            ),
+            video_extraction=VideoExtractionConfig(
                 method=args.extract_method,
                 num_frames=args.num_frames,
                 frame_interval=args.frame_interval,
-                target_fps=args.extract_fps,
-            )
-            logger.info(f"Extracted {len(extracted)} frames")
-        except Exception as e:
-            logger.error(f"Frame extraction failed: {e}")
-            return 1
-        
-        input_dir = frames_dir
-    else:
-        # Validate input directory
-        if not args.input_dir.exists():
-            logger.error(f"Input directory does not exist: {args.input_dir}")
-            return 1
-    
-    # Build configuration
-    config = PipelineConfig(
-        input_dir=input_dir,
-        output_dir=args.output_dir,
-        matching=MatchingConfig(
-            match_width=None if args.match_full_res else args.match_width,
-            min_inliers=args.min_inliers,
-            use_clahe=args.clahe,
-        ),
-        intrinsics=IntrinsicsConfig(
-            hfov_deg=args.hfov_deg,
-            calib_json=args.calib_json,
-        ),
-        blending=BlendingConfig(
-            method=args.blend,
-            multiband_levels=args.blend_levels,
-            multiband_sigma=args.multiband_sigma,
-            feather_sigma=args.feather_sigma,
-        ),
-        output=OutputConfig(
-            pano_width=args.pano_width,
-            output_format=args.output_format,
-        ),
-        debug=DebugConfig(
-            enabled=args.debug,
-        ),
-    )
+                extract_fps=args.extract_fps,
+            ),
+        )
     
     try:
         # Run pipeline

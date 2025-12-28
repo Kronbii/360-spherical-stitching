@@ -1,0 +1,51 @@
+# Example configuration file for 360° panorama stitching
+# Usage: python run.py --config config.yaml
+
+# Required: Input source (choose one)
+# input_dir: ./photos  # Directory containing input images
+# OR use video:
+video: ./IMG_1480_2.MOV
+
+# Required: Output directory
+output_dir: ./output/5-fps
+
+# Video extraction settings (only used if 'video' is specified above)
+video_extraction:
+  method: fps  # Options: uniform, interval, fps, motion
+  num_frames: 40  # For 'uniform' method
+  frame_interval: 15  # For 'interval' method
+  extract_fps: 2.0  # For 'fps' method
+
+# Output settings
+output:
+  pano_width: 4096  # Panorama width in pixels (height = width/2)
+  output_format: jpg  # Options: jpg, png
+  jpg_quality: 95  # JPEG quality (1-100)
+
+# Feature matching settings
+matching:
+  match_width: 1600  # Width for downscaled images during matching (or null for full resolution)
+  match_full_res: false  # If true, use full resolution (match_width is ignored)
+  min_inliers: 60  # Minimum RANSAC inliers required
+  use_clahe: false  # Apply CLAHE for feature extraction (helps with low contrast)
+
+# Camera intrinsics
+intrinsics:
+  hfov_deg: 42  # Horizontal field of view in degrees (fallback if EXIF unavailable)
+  calib_json: null  # Path to calibration JSON file (optional)
+
+# Blending settings
+blending:
+  method: multiband  # Options: multiband, feather, none
+  multiband_levels: 5  # Number of pyramid levels for multiband blending
+  multiband_sigma: 30.0  # Gaussian blur sigma for multiband (lower = sharper)
+  feather_sigma: 50.0  # Gaussian blur sigma for feather blending (lower = sharper)
+
+# Debug settings
+debug:
+  enabled: false  # Enable debug mode (saves intermediate visualizations)
+  save_matches: true  # Save feature match visualizations
+  save_warped_frames: 0  # Number of warped frames to save (0 = none)
+  save_seams: true  # Save blending masks
+  verbose_logging: true  # Enable verbose logging
+
