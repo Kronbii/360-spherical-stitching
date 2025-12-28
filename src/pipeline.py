@@ -51,6 +51,10 @@ from .rotation import (
     compute_relative_rotations,
     log_rotation_summary,
 )
+from .circular_match import (
+    detect_circular_closure,
+    trim_excess_frames,
+)
 from .warp_sphere import (
     estimate_panorama_coverage,
     save_debug_warps,
@@ -373,7 +377,14 @@ def run_pipeline(config: PipelineConfig) -> Path:
     # Check matching quality
     success, message = check_matching_quality(match_results, config.matching.min_inliers)
     if not success:
-        logger.error(message)
+        # Count failed pairs
+        failed_count = sum(1 for r in match_results if not r.success)
+        total_pairs = len(match_results)
+        success_rate = (total_pairs - failed_count) / total_pairs * 100
+        
+        logger.warning(f"Some pairs failed to match ({failed_count}/{total_pairs}, {success_rate:.1f}% success rate)")
+        logger.warning("Continuing with identity rotations for failed pairs...")
+        logger.warning(message)
         
         # Save debug visualizations for failed matches
         if config.debug.enabled:
@@ -387,7 +398,8 @@ def run_pipeline(config: PipelineConfig) -> Path:
                         vis_path
                     )
         
-        raise PanoramaStitchingError(f"Feature matching failed:\n{message}")
+        # Don't fail - continue with identity rotations for failed pairs
+        # The rotation computation will handle this automatically
     
     # Save match visualizations if debug enabled
     if config.debug.enabled and config.debug.save_matches:
@@ -422,7 +434,30 @@ def run_pipeline(config: PipelineConfig) -> Path:
     log_rotation_summary(global_rotations, rotation_diags)
     
     # ============================================================
-    # STEP 7: Load full-resolution images and warp
+    # STEP 5b: Detect and trim circular closure (if >360° captured)
+    # ============================================================
+    trim_idx = detect_circular_closure(
+        match_images,
+        match_results,
+        global_rotations,
+        config.matching,
+        scale=match_scale
+    )
+    
+    if trim_idx is not None and trim_idx < len(image_infos) - 1:
+        # Trim excess frames after closure point
+        match_images, image_infos, match_results, global_rotations = trim_excess_frames(
+            match_images,
+            image_infos,
+            match_results,
+            global_rotations,
+            trim_idx
+        )
+        
+        logger.info(f"Circular closure detected: trimmed to {len(image_infos)} frames")
+    
+    # ============================================================
+    # STEP 6: Load full-resolution images and warp
     # ============================================================
     logger.info("\n[STEP 6] Warping images to equirectangular projection...")
     

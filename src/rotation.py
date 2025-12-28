@@ -110,9 +110,13 @@ def compute_relative_rotations(
     logger.info("Computing relative rotations from homographies...")
     
     for result in match_results:
-        if result.homography is None:
-            # Use identity rotation if homography failed
-            logger.warning(f"Pair ({result.src_idx},{result.dst_idx}): No homography, using identity")
+        if result.homography is None or not result.success:
+            # Use identity rotation if homography failed or matching was unsuccessful
+            # For failed matches, assume no rotation (identity) - this allows pipeline to continue
+            if result.inliers == 0:
+                logger.debug(f"Pair ({result.src_idx},{result.dst_idx}): No matches, using identity rotation")
+            else:
+                logger.debug(f"Pair ({result.src_idx},{result.dst_idx}): Weak match ({result.inliers} inliers), using identity rotation")
             R_rel = np.eye(3)
             diag = {
                 "pair": (result.src_idx, result.dst_idx),

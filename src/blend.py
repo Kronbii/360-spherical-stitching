@@ -192,8 +192,8 @@ def multiband_blend(
     """
     Blend images using multiband (Laplacian pyramid) blending.
     
-    This provides better seam blending by blending different frequency
-    bands separately.
+    Memory-optimized version: processes images one at a time instead of storing all pyramids.
+    This provides better seam blending by blending different frequency bands separately.
     
     Args:
         images: List of warped images (BGR, uint8).
@@ -209,11 +209,7 @@ def multiband_blend(
     levels = config.multiband_levels
     H, W = images[0].shape[:2]
     
-    logger.info(f"Multiband blending {len(images)} images with {levels} levels...")
-    
-    # Convert images to float32
-    images_f = [img.astype(np.float32) for img in images]
-    masks_f = [(mask / 255.0).astype(np.float32) for mask in masks]
+    logger.info(f"Multiband blending {len(images)} images with {levels} levels (memory-optimized)...")
     
     # Compute weights from masks (distance-based for smooth transitions)
     weights = []
@@ -225,33 +221,54 @@ def multiband_blend(
     weight_sum = sum(weights)
     weight_sum = np.maximum(weight_sum, 1e-6)  # Avoid division by zero
     weights_normalized = [w / weight_sum for w in weights]
+    del weights, weight_sum  # Free memory
     
-    # Build Laplacian pyramids for each image
-    lap_pyramids = []
-    for img in images_f:
-        lap_pyramids.append(laplacian_pyramid(img, levels))
-    
-    # Build Gaussian pyramids for weights
-    weight_pyramids = []
-    for w in weights_normalized:
-        # Expand weight to 3 channels
-        w_3ch = np.stack([w, w, w], axis=-1)
-        weight_pyramids.append(gaussian_pyramid(w_3ch, levels))
-    
-    # Blend each pyramid level
+    # Initialize blended pyramid (will accumulate contributions)
+    # First determine sizes for each level
     blended_pyramid = []
     for level in range(levels):
-        # Initialize blended level
-        h, w = lap_pyramids[0][level].shape[:2]
-        blended_level = np.zeros((h, w, 3), dtype=np.float32)
+        # Calculate size for this level
+        current_h, current_w = H, W
+        for l in range(level):
+            current_h = (current_h + 1) // 2
+            current_w = (current_w + 1) // 2
+        blended_pyramid.append(np.zeros((current_h, current_w, 3), dtype=np.float32))
+    
+    # Process each image one at a time to minimize memory usage
+    for i, (img, w_norm) in enumerate(zip(images, weights_normalized)):
+        if (i + 1) % 10 == 0:
+            logger.debug(f"Processing image {i + 1}/{len(images)}...")
         
-        for i in range(len(images)):
-            blended_level += lap_pyramids[i][level] * weight_pyramids[i][level]
+        # Convert to float32 for this image
+        img_f = img.astype(np.float32)
         
-        blended_pyramid.append(blended_level)
+        # Build Laplacian pyramid for this image
+        lap_pyramid = laplacian_pyramid(img_f, levels)
+        
+        # Build Gaussian pyramid for weight (3 channels)
+        w_3ch = np.stack([w_norm, w_norm, w_norm], axis=-1).astype(np.float32)
+        w_pyramid = gaussian_pyramid(w_3ch, levels)
+        
+        # Accumulate weighted contribution to each level
+        for level in range(levels):
+            lap_level = lap_pyramid[level]
+            w_level = w_pyramid[level]
+            
+            # Ensure sizes match
+            h_lap, w_lap = lap_level.shape[:2]
+            h_w, w_w = w_level.shape[:2]
+            if h_lap != h_w or w_lap != w_w:
+                w_level = cv2.resize(w_level, (w_lap, h_lap))
+            
+            # Accumulate
+            blended_pyramid[level] += lap_level * w_level
+        
+        # Free memory for this image's pyramids immediately
+        del img_f, lap_pyramid, w_3ch, w_pyramid
     
     # Reconstruct from blended pyramid
     result = reconstruct_from_laplacian(blended_pyramid)
+    del blended_pyramid  # Free memory
     
     # Clip and convert to uint8
     result = np.clip(result, 0, 255).astype(np.uint8)
