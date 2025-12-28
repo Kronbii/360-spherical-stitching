@@ -50,3 +50,5 @@ output/
 Thumbs.db
 
 python=*/
+
+*.MOV
