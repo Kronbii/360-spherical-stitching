@@ -278,6 +278,52 @@ def multiband_blend(
     return result
 
 
+def no_blend(
+    images: List[np.ndarray],
+    masks: List[np.ndarray],
+    config: BlendingConfig
+) -> np.ndarray:
+    """
+    No blending - use highest-weight image at each pixel (hard seam cutting).
+    
+    This provides the sharpest result with no blur, but may show seams if alignment
+    is imperfect. For each pixel, selects the image with the highest mask value.
+    
+    Args:
+        images: List of warped images (BGR, uint8).
+        masks: List of masks (uint8, 0 or 255).
+        config: Blending configuration (unused, kept for API consistency).
+        
+    Returns:
+        Panorama with no blending (BGR, uint8).
+    """
+    if not images:
+        raise ValueError("No images to blend")
+    
+    H, W = images[0].shape[:2]
+    
+    logger.info(f"No blending: selecting highest-weight image at each pixel for {len(images)} images...")
+    
+    # Find which image has the highest mask value at each pixel
+    # Stack all masks to find argmax
+    mask_stack = np.stack(masks, axis=0)  # Shape: (n_images, H, W)
+    
+    # Find index of image with highest mask value at each pixel
+    best_image_idx = np.argmax(mask_stack, axis=0)  # Shape: (H, W)
+    
+    # Create output by selecting from appropriate image
+    result = np.zeros((H, W, 3), dtype=np.uint8)
+    
+    for i, img in enumerate(images):
+        # Where this image is the best (has highest mask value)
+        mask = (best_image_idx == i)
+        result[mask] = img[mask]
+    
+    logger.info("No blending complete")
+    
+    return result
+
+
 def blend_panorama(
     images: List[np.ndarray],
     masks: List[np.ndarray],
@@ -300,6 +346,8 @@ def blend_panorama(
         return feather_blend(images, masks, config)
     elif config.method == "multiband":
         return multiband_blend(images, masks, config)
+    elif config.method == "none":
+        return no_blend(images, masks, config)
     else:
         raise ValueError(f"Unknown blending method: {config.method}")
 

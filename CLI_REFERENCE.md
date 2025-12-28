@@ -133,13 +133,14 @@ Format: JSON with `camera_matrix_K` (3×3) and optional `dist_coeffs`
 ### `--blend`
 Type: Choice  
 Default: `multiband`  
-Choices: `multiband`, `feather`  
+Choices: `multiband`, `feather`, `none`  
 Description: Blending method for combining warped images
 
 - **`multiband`**: Laplacian pyramid blending (higher quality, more memory)
 - **`feather`**: Gaussian blur-based feather blending (faster, less memory)
+- **`none`**: No blending - uses highest-weight image at each pixel (sharpest, no blur, may show seams if alignment imperfect)
 
-Example: `--blend feather`
+Example: `--blend feather` or `--blend none`
 
 ### `--blend_levels`
 Type: Integer  
@@ -214,6 +215,13 @@ python run.py --video ./video.mov --output_dir ./output \
 python run.py --input_dir ./photos --output_dir ./output \
   --blend multiband --multiband_sigma 15.0 --blend_levels 3
 ```
+
+### No Blending (Maximum Sharpness)
+```bash
+python run.py --input_dir ./photos --output_dir ./output \
+  --blend none
+```
+Note: This provides the sharpest result with zero blur, but may show visible seams if image alignment is not perfect.
 
 ### Portrait Mode Phone Camera
 ```bash

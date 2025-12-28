@@ -192,9 +192,9 @@ Tips for capturing good panoramas:
     # Blending settings
     parser.add_argument(
         '--blend',
-        choices=['multiband', 'feather'],
+        choices=['multiband', 'feather', 'none'],
         default='multiband',
-        help='Blending method. Default: multiband'
+        help='Blending method. Default: multiband. "none" = no blending (sharpest, may show seams)'
     )
     parser.add_argument(
         '--blend_levels',

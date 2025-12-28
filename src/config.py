@@ -29,7 +29,7 @@ class IntrinsicsConfig:
 @dataclass
 class BlendingConfig:
     """Configuration for image blending."""
-    method: str = "multiband"  # 'multiband' or 'feather'
+    method: str = "multiband"  # 'multiband', 'feather', or 'none'
     multiband_levels: int = 5  # Number of pyramid levels for multiband
     multiband_sigma: float = 30.0  # Gaussian blur sigma for multiband weight computation
     feather_sigma: float = 50.0  # Gaussian blur sigma for feather blending
