@@ -435,7 +435,11 @@ def run_pipeline(config: PipelineConfig) -> Path:
         scale_factor=1.0  # Already at match scale
     )
     
-    global_rotations = chain_rotations(relative_rotations)
+    global_rotations = chain_rotations(
+        relative_rotations, 
+        apply_smoothing=True,
+        smoothing_window=config.matching.rotation_smoothing_window
+    )
     log_rotation_summary(global_rotations, rotation_diags)
     
     # ============================================================

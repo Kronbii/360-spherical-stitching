@@ -22,6 +22,7 @@ class MatchingConfig:
     symmetric_matching: bool = False  # Use symmetric matching (cross-check) - can be too strict for some datasets
     ransac_refinement: bool = True  # Refine homography with inliers after initial RANSAC
     ransac_max_iters: int = 3000  # Maximum RANSAC iterations (higher = better but slower)
+    rotation_smoothing_window: int = 3  # Temporal smoothing window size for rotations (odd, 3-15 recommended, larger = straighter lines but may oversmooth)
 
 
 @dataclass
@@ -113,6 +114,7 @@ class PipelineConfig:
                 "symmetric_matching": self.matching.symmetric_matching,
                 "ransac_refinement": self.matching.ransac_refinement,
                 "ransac_max_iters": self.matching.ransac_max_iters,
+                "rotation_smoothing_window": self.matching.rotation_smoothing_window,
             },
             "intrinsics": {
                 "hfov_deg": self.intrinsics.hfov_deg,
@@ -215,6 +217,7 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         symmetric_matching=matching_data.get('symmetric_matching', True),
         ransac_refinement=matching_data.get('ransac_refinement', True),
         ransac_max_iters=matching_data.get('ransac_max_iters', 3000),
+        rotation_smoothing_window=matching_data.get('rotation_smoothing_window', 3),
     )
     
     calib_json_str = intrinsics_data.get('calib_json')

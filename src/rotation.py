@@ -245,7 +245,7 @@ def smooth_rotations_temporal(
     half_window = window_size // 2
     smoothed = [global_rotations[0]]  # First rotation stays the same (reference)
     
-    logger.debug(f"Applying temporal smoothing (window size: {window_size})...")
+    logger.info(f"Applying temporal smoothing to rotations (window size: {window_size})...")
     
     for i in range(1, len(global_rotations) - 1):
         # Collect rotations in window
@@ -266,11 +266,11 @@ def smooth_rotations_temporal(
     # Last rotation stays the same
     smoothed.append(global_rotations[-1])
     
-    logger.debug(f"Applied temporal smoothing to {len(global_rotations)} rotations")
+    logger.info(f"Applied temporal smoothing to {len(global_rotations)} rotations (window: {window_size})")
     return smoothed
 
 
-def chain_rotations(relative_rotations: List[np.ndarray], apply_smoothing: bool = True) -> List[np.ndarray]:
+def chain_rotations(relative_rotations: List[np.ndarray], apply_smoothing: bool = True, smoothing_window: int = 3) -> List[np.ndarray]:
     """
     Chain relative rotations to get global rotations.
     
@@ -280,6 +280,7 @@ def chain_rotations(relative_rotations: List[np.ndarray], apply_smoothing: bool 
     Args:
         relative_rotations: List of relative rotations R_rel[i] (from image i to i+1).
         apply_smoothing: If True, apply temporal smoothing to global rotations (good for videos).
+        smoothing_window: Size of smoothing window (odd, 3-15 recommended, larger = straighter lines).
         
     Returns:
         List of global rotations R_global (length = len(relative_rotations) + 1).
@@ -299,7 +300,7 @@ def chain_rotations(relative_rotations: List[np.ndarray], apply_smoothing: bool 
     
     # Apply temporal smoothing for video sequences
     if apply_smoothing and len(global_rotations) > 3:
-        global_rotations = smooth_rotations_temporal(global_rotations, window_size=3)
+        global_rotations = smooth_rotations_temporal(global_rotations, window_size=smoothing_window)
     
     return global_rotations
 

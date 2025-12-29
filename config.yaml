@@ -33,6 +33,7 @@ matching:
   ransac_max_iters: 6000  # Max RANSAC iterations
   use_clahe: false  # Apply CLAHE for feature extraction (helps with low contrast)
   disable_circular_closure: true  # Set to true if your video doesn't loop (prevents false closure detection)
+  rotation_smoothing_window: 7  # Temporal smoothing window for rotations (odd, 3-15 recommended, larger = straighter lines, may oversmooth)
 
 # Camera intrinsics
 intrinsics:
@@ -41,7 +42,7 @@ intrinsics:
 
 # Blending settings
 blending:
-  method: sharp  # Options: multiband, feather, sharp, none
+  method: none  # Options: multiband, feather, sharp, none
   multiband_levels: 5  # Number of pyramid levels for multiband blending
   multiband_sigma: 3.0  # Gaussian blur sigma for multiband (lower = sharper)
   feather_sigma: 0.0  # Gaussian blur sigma for feather blending (lower = sharper)
