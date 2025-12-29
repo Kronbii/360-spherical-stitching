@@ -33,7 +33,7 @@ matching:
   ransac_max_iters: 6000  # Max RANSAC iterations
   use_clahe: false  # Apply CLAHE for feature extraction (helps with low contrast)
   disable_circular_closure: true  # Set to true if your video doesn't loop (prevents false closure detection)
-  rotation_smoothing_window: 7  # Temporal smoothing window for rotations (odd, 3-15 recommended, larger = straighter lines, may oversmooth)
+  rotation_smoothing_window: 17  # Temporal smoothing window for rotations (odd, 3-15 recommended, larger = straighter lines, may oversmooth)
 
 # Camera intrinsics
 intrinsics:
