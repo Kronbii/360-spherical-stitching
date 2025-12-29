@@ -2,8 +2,10 @@
 Image blending module for panorama stitching.
 
 Implements:
-- Feather blending (fast): distance-based soft blending
+- Feather blending (fast): distance-based soft blending with Gaussian blur
 - Multiband blending (default): Laplacian pyramid blending
+- Sharp blending (minimal blur): distance-based with sharp linear falloff, no Gaussian
+- No blending: hard seam cutting (sharpest, but shows seams)
 """
 
 import logging
@@ -15,6 +17,37 @@ import numpy as np
 from .config import BlendingConfig
 
 logger = logging.getLogger(__name__)
+
+
+def create_sharp_weight(mask: np.ndarray, blend_width: float = 2.0) -> np.ndarray:
+    """
+    Create sharp distance-based weight from mask using distance transform with sharp falloff.
+    
+    Uses linear falloff from mask edge, with blending only in a small zone (1-3 pixels).
+    No Gaussian blur is applied - this gives minimal blur while still smoothing seams.
+    
+    Args:
+        mask: Binary mask (uint8, 0 or 255).
+        blend_width: Width of blend zone in pixels (1-3 recommended).
+        
+    Returns:
+        Weight map (float32, 0 to 1) with sharp falloff.
+    """
+    # Distance transform from edge of mask
+    binary_mask = (mask > 127).astype(np.uint8)
+    
+    if np.sum(binary_mask) == 0:
+        return np.zeros(mask.shape, dtype=np.float32)
+    
+    # Compute distance from mask boundary (in pixels)
+    dist = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
+    
+    # Create sharp falloff: linear from edge to blend_width, then constant 1.0
+    # For pixels within blend_width of edge: weight = distance / blend_width
+    # For pixels deeper in mask: weight = 1.0
+    weight = np.clip(dist / max(blend_width, 0.1), 0.0, 1.0)
+    
+    return weight.astype(np.float32)
 
 
 def create_distance_weight(mask: np.ndarray, sigma: float = 50.0) -> np.ndarray:
@@ -338,6 +371,67 @@ def no_blend(
     return result
 
 
+def sharp_blend(
+    images: List[np.ndarray],
+    masks: List[np.ndarray],
+    config: BlendingConfig
+) -> np.ndarray:
+    """
+    Blend images using sharp falloff (minimal blur).
+    
+    Uses distance-based weights with sharp linear falloff and a small blend zone.
+    No Gaussian blur is applied - this minimizes blur while still smoothing seams.
+    Ideal for stitching many close frames where multiband/feather cause excessive blur.
+    
+    Args:
+        images: List of warped images (BGR, uint8).
+        masks: List of masks (uint8, 0 or 255).
+        config: Blending configuration (uses sharp_blend_width).
+        
+    Returns:
+        Blended panorama (BGR, uint8).
+    """
+    if not images:
+        raise ValueError("No images to blend")
+    
+    H, W = images[0].shape[:2]
+    
+    logger.info(f"Sharp blending {len(images)} images (blend width: {config.sharp_blend_width}px)...")
+    
+    # Accumulate weighted sum
+    result = np.zeros((H, W, 3), dtype=np.float64)
+    total_weight = np.zeros((H, W), dtype=np.float64)
+    
+    for i, (img, mask) in enumerate(zip(images, masks)):
+        # Progress update: every image for small batches, every 10 for large batches
+        if len(images) > 50:
+            if (i + 1) % 10 == 0 or i == 0:
+                logger.info(f"Blending image {i + 1}/{len(images)}...")
+        else:
+            logger.info(f"Blending image {i + 1}/{len(images)}...")
+        
+        # Create sharp weight from mask (linear falloff, no Gaussian)
+        weight = create_sharp_weight(mask, config.sharp_blend_width)
+        
+        # Accumulate
+        for c in range(3):
+            result[:, :, c] += img[:, :, c].astype(np.float64) * weight
+        total_weight += weight
+    
+    # Normalize by total weight
+    # Avoid division by zero
+    nonzero = total_weight > 1e-6
+    for c in range(3):
+        result[:, :, c] = np.where(nonzero, result[:, :, c] / total_weight, 0)
+    
+    # Convert to uint8
+    result = np.clip(result, 0, 255).astype(np.uint8)
+    
+    logger.info("Sharp blending complete")
+    
+    return result
+
+
 def blend_panorama(
     images: List[np.ndarray],
     masks: List[np.ndarray],
@@ -360,6 +454,8 @@ def blend_panorama(
         return feather_blend(images, masks, config)
     elif config.method == "multiband":
         return multiband_blend(images, masks, config)
+    elif config.method == "sharp":
+        return sharp_blend(images, masks, config)
     elif config.method == "none":
         return no_blend(images, masks, config)
     else:

@@ -34,10 +34,11 @@ class IntrinsicsConfig:
 @dataclass
 class BlendingConfig:
     """Configuration for image blending."""
-    method: str = "multiband"  # 'multiband', 'feather', or 'none'
+    method: str = "multiband"  # 'multiband', 'feather', 'sharp', or 'none'
     multiband_levels: int = 5  # Number of pyramid levels for multiband
     multiband_sigma: float = 30.0  # Gaussian blur sigma for multiband weight computation
     feather_sigma: float = 50.0  # Gaussian blur sigma for feather blending
+    sharp_blend_width: float = 2.0  # Blend zone width in pixels for sharp blending (1-3 recommended)
 
 
 @dataclass
@@ -122,6 +123,7 @@ class PipelineConfig:
                 "multiband_levels": self.blending.multiband_levels,
                 "multiband_sigma": self.blending.multiband_sigma,
                 "feather_sigma": self.blending.feather_sigma,
+                "sharp_blend_width": self.blending.sharp_blend_width,
             },
             "output": {
                 "pano_width": self.output.pano_width,
@@ -226,6 +228,7 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         multiband_levels=blending_data.get('multiband_levels', 5),
         multiband_sigma=blending_data.get('multiband_sigma', 30.0),
         feather_sigma=blending_data.get('feather_sigma', 50.0),
+        sharp_blend_width=blending_data.get('sharp_blend_width', 2.0),
     )
     
     output = OutputConfig(
