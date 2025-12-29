@@ -88,6 +88,60 @@ def extract_rotation_from_homography(
     return R, det_raw
 
 
+def interpolate_rotation_from_neighbors(
+    match_results: List[MatchResult],
+    relative_rotations: List[np.ndarray],
+    failed_idx: int
+) -> np.ndarray:
+    """
+    Interpolate rotation for a failed match using neighboring successful rotations.
+    
+    Args:
+        match_results: List of all match results.
+        relative_rotations: List of computed relative rotations (may have identity for failed ones).
+        failed_idx: Index of the failed match in match_results.
+        
+    Returns:
+        Interpolated rotation matrix, or identity if no neighbors available.
+    """
+    # Try previous neighbor first (most reliable for temporal sequences)
+    if failed_idx > 0 and match_results[failed_idx - 1].success:
+        prev_R = relative_rotations[failed_idx - 1]
+        if not np.allclose(prev_R, np.eye(3)):
+            logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
+                        f"Using previous successful rotation (pair {failed_idx - 1})")
+            return prev_R.copy()
+    
+    # Try next neighbor
+    if failed_idx < len(match_results) - 1 and match_results[failed_idx + 1].success:
+        next_R = relative_rotations[failed_idx + 1]
+        if not np.allclose(next_R, np.eye(3)):
+            logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
+                        f"Using next successful rotation (pair {failed_idx + 1})")
+            return next_R.copy()
+    
+    # If both neighbors exist and are successful, average them (in rotation space)
+    if (failed_idx > 0 and failed_idx < len(match_results) - 1 and
+        match_results[failed_idx - 1].success and match_results[failed_idx + 1].success):
+        prev_R = relative_rotations[failed_idx - 1]
+        next_R = relative_rotations[failed_idx + 1]
+        
+        if not np.allclose(prev_R, np.eye(3)) and not np.allclose(next_R, np.eye(3)):
+            # Average rotations using matrix logarithm (Lie algebra)
+            # For small rotations, this is approximately: (log(R1) + log(R2)) / 2
+            # Simplified: use direct average and re-orthonormalize (good enough for small rotations)
+            R_avg = (prev_R + next_R) / 2
+            R_interp = orthonormalize_rotation(R_avg)
+            logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
+                        f"Interpolated from neighbors (pairs {failed_idx - 1} and {failed_idx + 1})")
+            return R_interp
+    
+    # Fallback to identity
+    logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
+                f"No successful neighbors, using identity")
+    return np.eye(3)
+
+
 def compute_relative_rotations(
     match_results: List[MatchResult],
     K: np.ndarray,
@@ -95,6 +149,7 @@ def compute_relative_rotations(
 ) -> Tuple[List[np.ndarray], List[dict]]:
     """
     Compute relative rotations from homographies for all matched pairs.
+    Uses neighborhood interpolation for failed matches (better for video sequences).
     
     Args:
         match_results: List of MatchResult with homographies.
@@ -109,14 +164,10 @@ def compute_relative_rotations(
     
     logger.info("Computing relative rotations from homographies...")
     
+    # First pass: compute rotations for successful matches
     for result in match_results:
         if result.homography is None or not result.success:
-            # Use identity rotation if homography failed or matching was unsuccessful
-            # For failed matches, assume no rotation (identity) - this allows pipeline to continue
-            if result.inliers == 0:
-                logger.debug(f"Pair ({result.src_idx},{result.dst_idx}): No matches, using identity rotation")
-            else:
-                logger.debug(f"Pair ({result.src_idx},{result.dst_idx}): Weak match ({result.inliers} inliers), using identity rotation")
+            # Placeholder - will be interpolated in second pass
             R_rel = np.eye(3)
             diag = {
                 "pair": (result.src_idx, result.dst_idx),
@@ -148,10 +199,78 @@ def compute_relative_rotations(
         relative_rotations.append(R_rel)
         diagnostics.append(diag)
     
+    # Second pass: interpolate failed rotations from neighbors
+    for i, result in enumerate(match_results):
+        if result.homography is None or not result.success:
+            R_interp = interpolate_rotation_from_neighbors(match_results, relative_rotations, i)
+            relative_rotations[i] = R_interp
+            
+            # Update diagnostics
+            if not np.allclose(R_interp, np.eye(3)):
+                angle = rotation_angle_degrees(R_interp)
+                diagnostics[i]["status"] = "interpolated"
+                diagnostics[i]["angle_deg"] = angle
+                logger.info(f"Pair ({result.src_idx},{result.dst_idx}): "
+                           f"Interpolated rotation {angle:.2f}° from neighbors")
+    
     return relative_rotations, diagnostics
 
 
-def chain_rotations(relative_rotations: List[np.ndarray]) -> List[np.ndarray]:
+def smooth_rotations_temporal(
+    global_rotations: List[np.ndarray],
+    window_size: int = 3
+) -> List[np.ndarray]:
+    """
+    Apply temporal smoothing to global rotations using a moving average.
+    
+    For videos with smooth camera motion, this helps reduce jitter from
+    failed matches or estimation errors. Uses direct matrix averaging with
+    re-orthonormalization (works well for small rotations in smooth sequences).
+    
+    Args:
+        global_rotations: List of global rotation matrices.
+        window_size: Size of smoothing window (must be odd, default 3).
+        
+    Returns:
+        Smoothed list of global rotation matrices.
+    """
+    if len(global_rotations) <= 2:
+        return global_rotations
+    
+    if window_size % 2 == 0:
+        window_size += 1  # Make odd
+    if window_size < 3:
+        window_size = 3
+    
+    half_window = window_size // 2
+    smoothed = [global_rotations[0]]  # First rotation stays the same (reference)
+    
+    logger.debug(f"Applying temporal smoothing (window size: {window_size})...")
+    
+    for i in range(1, len(global_rotations) - 1):
+        # Collect rotations in window
+        start_idx = max(0, i - half_window)
+        end_idx = min(len(global_rotations), i + half_window + 1)
+        
+        # Collect all rotations in the window
+        window_rots = []
+        for j in range(start_idx, end_idx):
+            window_rots.append(global_rotations[j])
+        
+        # Average rotation matrices directly (works for small rotations)
+        # Re-orthonormalize to ensure valid rotation
+        R_avg = np.mean(window_rots, axis=0)
+        R_smooth = orthonormalize_rotation(R_avg)
+        smoothed.append(R_smooth)
+    
+    # Last rotation stays the same
+    smoothed.append(global_rotations[-1])
+    
+    logger.debug(f"Applied temporal smoothing to {len(global_rotations)} rotations")
+    return smoothed
+
+
+def chain_rotations(relative_rotations: List[np.ndarray], apply_smoothing: bool = True) -> List[np.ndarray]:
     """
     Chain relative rotations to get global rotations.
     
@@ -160,6 +279,7 @@ def chain_rotations(relative_rotations: List[np.ndarray]) -> List[np.ndarray]:
     
     Args:
         relative_rotations: List of relative rotations R_rel[i] (from image i to i+1).
+        apply_smoothing: If True, apply temporal smoothing to global rotations (good for videos).
         
     Returns:
         List of global rotations R_global (length = len(relative_rotations) + 1).
@@ -176,6 +296,10 @@ def chain_rotations(relative_rotations: List[np.ndarray]) -> List[np.ndarray]:
         global_rotations.append(R_global_new)
     
     logger.info(f"Chained {len(relative_rotations)} relative rotations into {n} global rotations")
+    
+    # Apply temporal smoothing for video sequences
+    if apply_smoothing and len(global_rotations) > 3:
+        global_rotations = smooth_rotations_temporal(global_rotations, window_size=3)
     
     return global_rotations
 

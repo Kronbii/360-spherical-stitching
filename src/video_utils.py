@@ -94,6 +94,13 @@ def extract_frames_uniform(
     
     extracted_paths = []
     for i, frame_idx in enumerate(frame_indices):
+        # Progress update: every frame for small batches, every 10 for large batches
+        if num_frames > 50:
+            if (i + 1) % 10 == 0 or i == 0:
+                logger.info(f"Extracting frame {i+1}/{num_frames}...")
+        else:
+            logger.info(f"Extracting frame {i+1}/{num_frames}...")
+        
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         
@@ -155,6 +162,13 @@ def extract_frames_interval(
             break
         
         if frame_idx % frame_interval == 0:
+            # Progress update: every 10 frames for large batches
+            if expected_frames > 50:
+                if output_idx % 10 == 0:
+                    logger.info(f"Extracting frame {output_idx+1}/{expected_frames}...")
+            else:
+                logger.info(f"Extracting frame {output_idx+1}/{expected_frames}...")
+            
             frame_path = output_dir / f"frame_{output_idx:04d}.jpg"
             cv2.imwrite(str(frame_path), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
             extracted_paths.append(frame_path)
@@ -247,7 +261,7 @@ def extract_keyframes_motion(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     
-    logger.info(f"Analyzing video for motion-based keyframes...")
+    logger.info(f"Analyzing video for motion-based keyframes ({total_frames} frames)...")
     
     # First pass: compute motion scores
     motion_scores = []
@@ -258,6 +272,10 @@ def extract_keyframes_motion(
         ret, frame = cap.read()
         if not ret:
             break
+        
+        # Progress update during analysis: every 100 frames
+        if frame_idx % 100 == 0 and frame_idx > 0:
+            logger.info(f"Analyzing motion: frame {frame_idx}/{total_frames}...")
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.resize(gray, (320, 240))  # Downscale for speed
@@ -297,10 +315,19 @@ def extract_keyframes_motion(
             selected_indices.append(frame_idx)
     
     # Re-open video and extract selected frames
+    logger.info(f"Extracting {len(selected_indices)} keyframes...")
     cap = cv2.VideoCapture(str(video_path))
     extracted_paths = []
+    sorted_indices = sorted(selected_indices)
     
-    for i, frame_idx in enumerate(sorted(selected_indices)):
+    for i, frame_idx in enumerate(sorted_indices):
+        # Progress update: every frame for small batches, every 10 for large batches
+        if len(sorted_indices) > 50:
+            if (i + 1) % 10 == 0 or i == 0:
+                logger.info(f"Extracting keyframe {i+1}/{len(sorted_indices)}...")
+        else:
+            logger.info(f"Extracting keyframe {i+1}/{len(sorted_indices)}...")
+        
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         
@@ -312,7 +339,7 @@ def extract_keyframes_motion(
         extracted_paths.append(frame_path)
         
         time_sec = frame_idx / fps
-        logger.debug(f"Extracted keyframe {i+1}/{len(selected_indices)} (t={time_sec:.2f}s)")
+        logger.debug(f"Extracted keyframe {i+1}/{len(sorted_indices)} (t={time_sec:.2f}s)")
     
     cap.release()
     

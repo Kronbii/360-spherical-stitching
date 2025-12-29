@@ -270,10 +270,6 @@ def sort_images_robustly(image_paths: List[Path]) -> Tuple[List[ImageInfo], str]
             method = "filename_natural"
             logger.info(f"Sorted {len(image_infos)} images by natural filename order")
     
-    # Log the order
-    logger.debug("Image order:")
-    for i, info in enumerate(sorted_infos):
-        logger.debug(f"  {i+1}. {info.path.name} ({info.sort_method})")
     
     return sorted_infos, method
 
@@ -314,7 +310,14 @@ def load_images(image_infos: List[ImageInfo], max_width: Optional[int] = None) -
         List of images as numpy arrays.
     """
     images = []
-    for info in image_infos:
+    for i, info in enumerate(image_infos):
+        # Progress update: every image for small batches, every 10 for large batches
+        if len(image_infos) > 50:
+            if (i + 1) % 10 == 0 or i == 0:
+                logger.info(f"Loading image {i+1}/{len(image_infos)}: {info.path.name}...")
+        else:
+            logger.info(f"Loading image {i+1}/{len(image_infos)}: {info.path.name}...")
+        
         img = load_image(info.path, max_width)
         images.append(img)
         logger.debug(f"Loaded {info.path.name}: {img.shape[1]}x{img.shape[0]}")

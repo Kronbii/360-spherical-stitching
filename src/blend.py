@@ -236,8 +236,12 @@ def multiband_blend(
     
     # Process each image one at a time to minimize memory usage
     for i, (img, w_norm) in enumerate(zip(images, weights_normalized)):
-        if (i + 1) % 10 == 0:
-            logger.debug(f"Processing image {i + 1}/{len(images)}...")
+        # Progress update: every image for small batches, every 10 for large batches
+        if len(images) > 50:
+            if (i + 1) % 10 == 0 or i == 0:
+                logger.info(f"Blending image {i + 1}/{len(images)}...")
+        else:
+            logger.info(f"Blending image {i + 1}/{len(images)}...")
         
         # Convert to float32 for this image
         img_f = img.astype(np.float32)
@@ -313,6 +317,13 @@ def no_blend(
     
     # Process images one at a time
     for i, (img, mask) in enumerate(zip(images, masks)):
+        # Progress update: every image for small batches, every 10 for large batches
+        if len(images) > 50:
+            if (i + 1) % 10 == 0 or i == 0:
+                logger.info(f"Processing image {i + 1}/{len(images)}...")
+        else:
+            logger.info(f"Processing image {i + 1}/{len(images)}...")
+        
         # Find pixels where this mask is better than previous best
         is_better = mask > best_mask_value
         

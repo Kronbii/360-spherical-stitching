@@ -13,7 +13,7 @@ output_dir: ./output/tesing
 video_extraction:
   method: interval  # Options: uniform, interval, fps, motion
   num_frames: 40  # For 'uniform' method
-  frame_interval: 5  # For 'interval' method
+  frame_interval: 2  # For 'interval' method
   extract_fps: 20.0  # For 'fps' method
 
 # Output settings
@@ -26,7 +26,7 @@ output:
 matching:
   match_width: 1600  # Width for downscaled images during matching (or null for full resolution)
   match_full_res: true  # If true, use full resolution (match_width is ignored)
-  min_inliers: 100  # Minimum RANSAC inliers required (lowered from 60 for better success rate)
+  min_inliers: 200  # Minimum RANSAC inliers required (lowered from 60 for better success rate)
   ratio_test_threshold: 0.7  # Lowe's ratio test (0.75 = balanced, lower = stricter)
   symmetric_matching: false  # Cross-check matches (can be too strict - enable if you have many features)
   ransac_refinement: true  # Refine homography after RANSAC (recommended)
@@ -41,10 +41,10 @@ intrinsics:
 
 # Blending settings
 blending:
-  method: none  # Options: multiband, feather, none
-  multiband_levels: 1  # Number of pyramid levels for multiband blending
-  multiband_sigma: 10.0  # Gaussian blur sigma for multiband (lower = sharper)
-  feather_sigma: 10.0  # Gaussian blur sigma for feather blending (lower = sharper)
+  method: feather  # Options: multiband, feather, none
+  multiband_levels: 5  # Number of pyramid levels for multiband blending
+  multiband_sigma: 3.0  # Gaussian blur sigma for multiband (lower = sharper)
+  feather_sigma: 1.0  # Gaussian blur sigma for feather blending (lower = sharper)
 
 # Debug settings
 debug:

@@ -219,7 +219,12 @@ def warp_all_images(
     masks = []
     
     for i, (image, R) in enumerate(zip(images, global_rotations)):
-        logger.debug(f"Warping image {i+1}/{len(images)}...")
+        # Progress update every image (or every 5 for large batches)
+        if len(images) > 50:
+            if (i + 1) % 5 == 0 or i == 0:
+                logger.info(f"Warping image {i+1}/{len(images)}...")
+        else:
+            logger.info(f"Warping image {i+1}/{len(images)}...")
         
         warped, mask = warp_image_to_equirectangular(
             image, R, calib, theta, phi, (H, W)
@@ -230,7 +235,8 @@ def warp_all_images(
         
         # Log coverage
         coverage = np.sum(mask > 0) / (W * H) * 100
-        logger.debug(f"  Image {i+1}: {coverage:.1f}% panorama coverage")
+        if len(images) <= 50:  # Only log coverage for smaller batches
+            logger.debug(f"  Image {i+1}: {coverage:.1f}% panorama coverage")
     
     logger.info(f"Warped all {len(images)} images")
     
@@ -278,10 +284,12 @@ def warp_and_blend_sequential(
     masks = []
     
     for i, (image_info, R) in enumerate(zip(image_infos, global_rotations)):
-        if (i + 1) % 10 == 0:
-            logger.info(f"Processing image {i+1}/{len(image_infos)}...")
+        # Progress update: every image for small batches, every 5 for large batches
+        if len(image_infos) > 50:
+            if (i + 1) % 5 == 0 or i == 0:
+                logger.info(f"Processing image {i+1}/{len(image_infos)}...")
         else:
-            logger.debug(f"Warping image {i+1}/{len(image_infos)}...")
+            logger.info(f"Processing image {i+1}/{len(image_infos)}...")
         
         # Load image
         image = load_image(image_info.path, max_width=None)
@@ -301,9 +309,10 @@ def warp_and_blend_sequential(
         # Store mask for coverage statistics
         masks.append(mask)
         
-        # Log coverage
-        coverage = np.sum(mask > 0) / (W * H) * 100
-        logger.debug(f"  Image {i+1}: {coverage:.1f}% panorama coverage")
+        # Log coverage for smaller batches
+        if len(image_infos) <= 50:
+            coverage = np.sum(mask > 0) / (W * H) * 100
+            logger.debug(f"  Image {i+1}: {coverage:.1f}% panorama coverage")
         
         # Free memory explicitly
         del image, warped

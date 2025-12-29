@@ -376,7 +376,16 @@ def match_sequential_pairs(
     logger.info(f"Matching {n_images - 1} sequential pairs...")
     
     i = 0
+    pair_count = 0
     while i < n_images - 1:
+        pair_count += 1
+        # Progress update: every pair for small batches, every 10 for large batches
+        if (n_images - 1) > 50:
+            if pair_count % 10 == 0 or pair_count == 1:
+                logger.info(f"Matching pair {pair_count}/{n_images - 1} (images {i}->{i+1})...")
+        else:
+            logger.info(f"Matching pair {pair_count}/{n_images - 1} (images {i}->{i+1})...")
+        
         if skip_next:
             skip_next = False
             i += 1
@@ -387,7 +396,7 @@ def match_sequential_pairs(
         
         if result.success:
             results.append(result)
-            logger.info(f"Pair ({i},{i+1}): {result.inliers} inliers ✓")
+            logger.debug(f"Pair ({i},{i+1}): {result.inliers} inliers ✓")
             i += 1
         else:
             # Try skipping one image for stability
@@ -526,12 +535,6 @@ def check_matching_quality(results: List[MatchResult], min_inliers: int) -> Tupl
     msg_parts = [f"Matching failed for {len(failed_pairs)} pair(s):"]
     for src, dst, inliers in failed_pairs:
         msg_parts.append(f"  - Pair ({src},{dst}): {inliers} inliers (need {min_inliers})")
-    
-    msg_parts.append("\nSuggestions:")
-    msg_parts.append("  1. Ensure sufficient overlap between images (30-50%)")
-    msg_parts.append("  2. Try --clahe flag for better feature detection in low contrast")
-    msg_parts.append("  3. Check if images are in correct order")
-    msg_parts.append("  4. Reduce movement between shots")
     
     return False, "\n".join(msg_parts)
 
