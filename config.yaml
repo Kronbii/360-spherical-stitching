@@ -41,10 +41,10 @@ intrinsics:
 
 # Blending settings
 blending:
-  method: feather  # Options: multiband, feather, none
+  method: none  # Options: multiband, feather, none
   multiband_levels: 5  # Number of pyramid levels for multiband blending
   multiband_sigma: 3.0  # Gaussian blur sigma for multiband (lower = sharper)
-  feather_sigma: 1.0  # Gaussian blur sigma for feather blending (lower = sharper)
+  feather_sigma: 0.0  # Gaussian blur sigma for feather blending (lower = sharper)
 
 # Debug settings
 debug:
