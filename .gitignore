@@ -52,3 +52,5 @@ Thumbs.db
 python=*/
 
 *.MOV
+
+!showcase/panorama.jpg

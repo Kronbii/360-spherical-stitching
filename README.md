@@ -4,7 +4,12 @@ Transform your phone photos into stunning 360° immersive panoramas with profess
 
 ![Panorama Example](showcase/panorama.jpg)
 
-> **🎬 Watch the showcase video:** [Add your recorded video here - e.g., link to YouTube/Vimeo or embed showcase/demo.mp4]
+**🎬 Showcase Video:**
+
+<video width="800" controls autoplay loop muted>
+  <source src="showcase/GOAT.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video> 
 
 ## ✨ Features
 
