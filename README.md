@@ -6,10 +6,7 @@ Transform your phone photos into stunning 360° immersive panoramas with profess
 
 **🎬 Showcase Video:**
 
-<video width="800" controls autoplay loop muted>
-  <source src="showcase/GOAT.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video> 
+![Showcase Video](showcase/GOAT.gif) 
 
 ## ✨ Features
 
