@@ -54,3 +54,5 @@ python=*/
 *.MOV
 
 !showcase/panorama.jpg
+# Vercel
+.vercel
