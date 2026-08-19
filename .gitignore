@@ -56,3 +56,6 @@ python=*/
 !showcase/panorama.jpg
 # Vercel
 .vercel
+
+# the showcase site ships its own imagery
+!docs/assets/**
