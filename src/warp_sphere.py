@@ -12,6 +12,8 @@ Coordinate system:
 """
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Tuple, Optional, Callable
 
@@ -72,13 +74,38 @@ def spherical_to_world_directions(theta: np.ndarray, phi: np.ndarray) -> Tuple[n
     return x, y, z
 
 
+def world_direction_grid(
+    theta: np.ndarray,
+    phi: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    World direction for every panorama pixel, as float32 and computed once.
+
+    Same result as spherical_to_world_directions, but kept in float32 and intended to be
+    hoisted out of a per-frame loop: the grid depends only on the output size.
+
+    Args:
+        theta: Azimuth grid (H, W).
+        phi: Elevation grid (H, W).
+
+    Returns:
+        Tuple of (x, y, z) direction components, float32, shape (H, W).
+    """
+    cos_phi = np.cos(phi)
+    x = np.multiply(np.sin(theta), cos_phi, dtype=np.float32)
+    y = np.sin(phi).astype(np.float32, copy=False)
+    z = np.multiply(np.cos(theta), cos_phi, dtype=np.float32)
+    return x, y, z
+
+
 def compute_warp_maps(
     theta: np.ndarray,
     phi: np.ndarray,
     R: np.ndarray,
     calib: CalibrationData,
     image_width: int,
-    image_height: int
+    image_height: int,
+    world_dirs: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute warp maps for a single image using inverse mapping.
@@ -100,47 +127,51 @@ def compute_warp_maps(
     Returns:
         Tuple of (map_x, map_y, valid_mask) for cv2.remap.
     """
-    # Get world directions
-    x_world, y_world, z_world = spherical_to_world_directions(theta, phi)
-    
-    # Stack into (H, W, 3)
-    r_world = np.stack([x_world, y_world, z_world], axis=-1)
-    
+    # World directions depend only on the panorama grid, never on R, so a caller warping
+    # a whole sequence should compute them once and pass them in. Recomputing four
+    # transcendentals over every output pixel per frame dominates the warp otherwise.
+    if world_dirs is None:
+        x_world, y_world, z_world = world_direction_grid(theta, phi)
+    else:
+        x_world, y_world, z_world = world_dirs
+
     # Transform to camera frame: r_cam = R @ r_world
     # R_global transforms world directions to camera frame
     # (camera rotated by R, so world point appears at R @ world_dir in camera)
     R_mat = R.astype(np.float32)
-    
-    # Efficient batch matrix-vector multiplication
-    # Reshape r_world to (H*W, 3), multiply, reshape back
-    H, W = theta.shape
-    r_flat = r_world.reshape(-1, 3)
-    r_cam_flat = (R_mat @ r_flat.T).T  # (H*W, 3)
-    r_cam = r_cam_flat.reshape(H, W, 3)
-    
-    x_cam = r_cam[:, :, 0]
-    y_cam = r_cam[:, :, 1]
-    z_cam = r_cam[:, :, 2]
-    
+
+    # Written as three explicit rows rather than a reshape-and-matmul: the same
+    # arithmetic without materialising the (H, W, 3) stack and its two transposes,
+    # which at 4096x2048 is 100 MB of traffic per frame.
+    x_cam = R_mat[0, 0] * x_world + R_mat[0, 1] * y_world + R_mat[0, 2] * z_world
+    y_cam = R_mat[1, 0] * x_world + R_mat[1, 1] * y_world + R_mat[1, 2] * z_world
+    z_cam = R_mat[2, 0] * x_world + R_mat[2, 1] * y_world + R_mat[2, 2] * z_world
+
     # Valid mask: z > 0 (point is in front of camera)
-    valid_z = z_cam > 1e-6
-    
-    # Project to image coordinates
-    # Avoid division by zero
-    z_safe = np.where(valid_z, z_cam, 1.0)
-    
-    map_x = calib.fx * (x_cam / z_safe) + calib.cx
-    map_y = calib.fy * (y_cam / z_safe) + calib.cy
-    
+    valid_mask = z_cam > 1e-6
+
+    # Avoid division by zero. Pixels behind the camera get a placeholder depth and are
+    # masked out below, so the values they produce never matter.
+    np.copyto(z_cam, 1.0, where=~valid_mask)
+
+    # Project to image coordinates, in place to keep the temporaries down
+    map_x = x_cam
+    map_x /= z_cam
+    map_x *= calib.fx
+    map_x += calib.cx
+
+    map_y = y_cam
+    map_y /= z_cam
+    map_y *= calib.fy
+    map_y += calib.cy
+
     # Valid mask: within image bounds
     margin = 1.0  # Small margin to avoid edge artifacts
-    valid_bounds = (
-        (map_x >= margin) & (map_x < image_width - margin) &
-        (map_y >= margin) & (map_y < image_height - margin)
-    )
-    
-    valid_mask = valid_z & valid_bounds
-    
+    valid_mask &= map_x >= margin
+    valid_mask &= map_x < image_width - margin
+    valid_mask &= map_y >= margin
+    valid_mask &= map_y < image_height - margin
+
     return map_x, map_y, valid_mask
 
 
@@ -150,7 +181,8 @@ def warp_image_to_equirectangular(
     calib: CalibrationData,
     theta: np.ndarray,
     phi: np.ndarray,
-    output_shape: Tuple[int, int]
+    output_shape: Tuple[int, int],
+    world_dirs: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Warp a single image to equirectangular panorama coordinates.
@@ -171,7 +203,7 @@ def warp_image_to_equirectangular(
     
     # Compute warp maps
     map_x, map_y, valid_mask = compute_warp_maps(
-        theta, phi, R, calib, img_w, img_h
+        theta, phi, R, calib, img_w, img_h, world_dirs
     )
     
     # Warp using cv2.remap
@@ -272,53 +304,69 @@ def warp_and_blend_sequential(
         List of masks (for coverage statistics).
     """
     from .io_utils import load_image
-    
+
     W = output_config.pano_width
     H = output_config.pano_height
-    
-    logger.info(f"Sequentially warping {len(image_infos)} images to equirectangular ({W}x{H})...")
-    
-    # Precompute theta/phi grids once
+    n = len(image_infos)
+
+    # Load and remap are the expensive part and both release the GIL, so frames warp
+    # concurrently. The blend callback still runs in index order, since blending modes
+    # like 'none' and 'sharp' depend on which frame reaches a pixel first.
+    workers = getattr(output_config, "warp_workers", 0)
+    if workers <= 0:
+        workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+    workers = min(workers, n)
+
+    logger.info(f"Warping {n} images to equirectangular ({W}x{H}) on {workers} worker(s)...")
+
+    # Precompute theta/phi grids once, and the world directions they imply
     theta, phi = create_equirectangular_grid(W, H)
-    
-    masks = []
-    
-    for i, (image_info, R) in enumerate(zip(image_infos, global_rotations)):
-        # Progress update: every image for small batches, every 5 for large batches
-        if len(image_infos) > 50:
-            if (i + 1) % 5 == 0 or i == 0:
-                logger.info(f"Processing image {i+1}/{len(image_infos)}...")
-        else:
-            logger.info(f"Processing image {i+1}/{len(image_infos)}...")
-        
-        # Load image
-        image = load_image(image_info.path, max_width=None)
-        
-        # Undistort if needed
+    world_dirs = world_direction_grid(theta, phi)
+
+    def warp_one(idx: int):
+        image = load_image(image_infos[idx].path, max_width=None)
         if undistort_func:
             image = undistort_func(image)
-        
-        # Warp image
-        warped, mask = warp_image_to_equirectangular(
-            image, R, calib, theta, phi, (H, W)
-        )
-        
-        # Call blend callback
-        blend_callback(warped, mask, i)
-        
-        # Store mask for coverage statistics
-        masks.append(mask)
-        
-        # Log coverage for smaller batches
-        if len(image_infos) <= 50:
+        return warp_image_to_equirectangular(image, global_rotations[idx], calib, theta, phi,
+                                            (H, W), world_dirs)
+
+    def report(idx: int, mask: np.ndarray) -> None:
+        if n > 50:
+            if (idx + 1) % 5 == 0 or idx == 0:
+                logger.info(f"Processing image {idx+1}/{n}...")
+        else:
+            logger.info(f"Processing image {idx+1}/{n}...")
             coverage = np.sum(mask > 0) / (W * H) * 100
-            logger.debug(f"  Image {i+1}: {coverage:.1f}% panorama coverage")
-        
-        # Free memory explicitly
-        del image, warped
-    
-    logger.info(f"Sequentially warped all {len(image_infos)} images")
-    
+            logger.debug(f"  Image {idx+1}: {coverage:.1f}% panorama coverage")
+
+    masks = []
+
+    if workers == 1:
+        for i in range(n):
+            warped, mask = warp_one(i)
+            report(i, mask)
+            blend_callback(warped, mask, i)
+            masks.append(mask)
+            del warped
+    else:
+        # Keep only a small number of warped frames in flight: each one is
+        # W*H*3 bytes, which is 24 MB at 4096x2048.
+        in_flight = workers + 2
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pending = {}
+            submitted = 0
+            for i in range(n):
+                while submitted < n and len(pending) < in_flight:
+                    pending[submitted] = pool.submit(warp_one, submitted)
+                    submitted += 1
+                warped, mask = pending.pop(i).result()
+                report(i, mask)
+                blend_callback(warped, mask, i)
+                masks.append(mask)
+                del warped
+
+    logger.info(f"Warped all {n} images")
+
     return masks
 
 

@@ -11,7 +11,7 @@ We orthonormalize R using SVD to ensure it's a valid rotation matrix.
 """
 
 import logging
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -104,38 +104,37 @@ def interpolate_rotation_from_neighbors(
     Returns:
         Interpolated rotation matrix, or identity if no neighbors available.
     """
-    # Try previous neighbor first (most reliable for temporal sequences)
-    if failed_idx > 0 and match_results[failed_idx - 1].success:
-        prev_R = relative_rotations[failed_idx - 1]
-        if not np.allclose(prev_R, np.eye(3)):
-            logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
-                        f"Using previous successful rotation (pair {failed_idx - 1})")
-            return prev_R.copy()
-    
-    # Try next neighbor
-    if failed_idx < len(match_results) - 1 and match_results[failed_idx + 1].success:
-        next_R = relative_rotations[failed_idx + 1]
-        if not np.allclose(next_R, np.eye(3)):
-            logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
-                        f"Using next successful rotation (pair {failed_idx + 1})")
-            return next_R.copy()
-    
-    # If both neighbors exist and are successful, average them (in rotation space)
-    if (failed_idx > 0 and failed_idx < len(match_results) - 1 and
-        match_results[failed_idx - 1].success and match_results[failed_idx + 1].success):
-        prev_R = relative_rotations[failed_idx - 1]
-        next_R = relative_rotations[failed_idx + 1]
-        
-        if not np.allclose(prev_R, np.eye(3)) and not np.allclose(next_R, np.eye(3)):
-            # Average rotations using matrix logarithm (Lie algebra)
-            # For small rotations, this is approximately: (log(R1) + log(R2)) / 2
-            # Simplified: use direct average and re-orthonormalize (good enough for small rotations)
-            R_avg = (prev_R + next_R) / 2
-            R_interp = orthonormalize_rotation(R_avg)
-            logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
-                        f"Interpolated from neighbors (pairs {failed_idx - 1} and {failed_idx + 1})")
-            return R_interp
-    
+    pair = f"({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx})"
+
+    def usable(idx: int) -> Optional[np.ndarray]:
+        """The neighbour's rotation, if that pair matched and moved at all."""
+        if not (0 <= idx < len(match_results)) or not match_results[idx].success:
+            return None
+        R = relative_rotations[idx]
+        return None if np.allclose(R, np.eye(3)) else R
+
+    prev_R, next_R = usable(failed_idx - 1), usable(failed_idx + 1)
+
+    # Both sides available: average them, which brackets the true rotation instead of
+    # inheriting whichever side happens to come first. Checked before the single-sided
+    # cases — testing it last made it unreachable, since a usable previous neighbour
+    # always returned before the averaging could run.
+    if prev_R is not None and next_R is not None:
+        # Direct average with re-orthonormalization. For the small rotations between
+        # adjacent video frames this matches the Lie-algebra mean closely.
+        R_interp = orthonormalize_rotation((prev_R + next_R) / 2)
+        logger.debug(f"Pair {pair}: interpolated from neighbours "
+                    f"(pairs {failed_idx - 1} and {failed_idx + 1})")
+        return R_interp
+
+    if prev_R is not None:
+        logger.debug(f"Pair {pair}: using previous successful rotation (pair {failed_idx - 1})")
+        return prev_R.copy()
+
+    if next_R is not None:
+        logger.debug(f"Pair {pair}: using next successful rotation (pair {failed_idx + 1})")
+        return next_R.copy()
+
     # Fallback to identity
     logger.debug(f"Pair ({match_results[failed_idx].src_idx},{match_results[failed_idx].dst_idx}): "
                 f"No successful neighbors, using identity")
@@ -216,6 +215,35 @@ def compute_relative_rotations(
     return relative_rotations, diagnostics
 
 
+def reflect_pad_rotations(
+    global_rotations: List[np.ndarray],
+    pad: int
+) -> List[np.ndarray]:
+    """
+    Extend a rotation sequence at both ends by reflecting it about its endpoints.
+
+    The reflection is antisymmetric — it continues the motion rather than repeating the
+    end pose, so a moving average over the padded sequence keeps the sweep's local rate
+    instead of lagging behind it. For a yaw-only sweep this is exactly
+    yaw[-k] = 2*yaw[0] - yaw[k] at the start, and the mirror of that at the end.
+
+    Args:
+        global_rotations: Rotation sequence to pad.
+        pad: Number of frames to add at each end.
+
+    Returns:
+        List of length len(global_rotations) + 2 * pad.
+    """
+    if pad <= 0:
+        return list(global_rotations)
+
+    first, last = global_rotations[0], global_rotations[-1]
+    n = len(global_rotations)
+    left = [first @ global_rotations[k].T @ first for k in range(pad, 0, -1)]
+    right = [last @ global_rotations[n - 1 - k].T @ last for k in range(1, pad + 1)]
+    return left + list(global_rotations) + right
+
+
 def smooth_rotations_temporal(
     global_rotations: List[np.ndarray],
     window_size: int = 3
@@ -236,37 +264,37 @@ def smooth_rotations_temporal(
     """
     if len(global_rotations) <= 2:
         return global_rotations
-    
+
     if window_size % 2 == 0:
         window_size += 1  # Make odd
     if window_size < 3:
         window_size = 3
-    
-    half_window = window_size // 2
-    smoothed = [global_rotations[0]]  # First rotation stays the same (reference)
-    
-    logger.info(f"Applying temporal smoothing to rotations (window size: {window_size})...")
-    
-    for i in range(1, len(global_rotations) - 1):
-        # Collect rotations in window
-        start_idx = max(0, i - half_window)
-        end_idx = min(len(global_rotations), i + half_window + 1)
-        
-        # Collect all rotations in the window
-        window_rots = []
-        for j in range(start_idx, end_idx):
-            window_rots.append(global_rotations[j])
-        
+
+    n = len(global_rotations)
+    half_window = min(window_size // 2, n - 1)
+
+    logger.info(f"Applying temporal smoothing to rotations (window size: {2 * half_window + 1})...")
+
+    # Every frame gets a full, symmetric window. Clamping the window at the ends instead
+    # would average the tail mostly against earlier frames and drag it backwards, and
+    # exempting the first and last rotations would then leave them snapping away from
+    # their smoothed neighbours: on a clip that ends mid-motion that shows up as a tear
+    # at the final frame several times larger than any real step.
+    padded = reflect_pad_rotations(global_rotations, half_window)
+
+    smoothed = []
+    for i in range(n):
+        window_rots = padded[i:i + 2 * half_window + 1]
         # Average rotation matrices directly (works for small rotations)
         # Re-orthonormalize to ensure valid rotation
-        R_avg = np.mean(window_rots, axis=0)
-        R_smooth = orthonormalize_rotation(R_avg)
-        smoothed.append(R_smooth)
-    
-    # Last rotation stays the same
-    smoothed.append(global_rotations[-1])
-    
-    logger.info(f"Applied temporal smoothing to {len(global_rotations)} rotations (window: {window_size})")
+        smoothed.append(orthonormalize_rotation(np.mean(window_rots, axis=0)))
+
+    # Frame 0 is the reference the whole chain is expressed against, so put it back
+    # exactly and carry the same correction through the rest.
+    correction = global_rotations[0] @ smoothed[0].T
+    smoothed = [orthonormalize_rotation(correction @ R) for R in smoothed]
+
+    logger.info(f"Applied temporal smoothing to {n} rotations (window: {2 * half_window + 1})")
     return smoothed
 
 

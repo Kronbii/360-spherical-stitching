@@ -21,6 +21,7 @@ output:
   pano_width: 4096  # Panorama width in pixels (height = width/2)
   output_format: jpg  # Options: jpg, png
   jpg_quality: 95  # JPEG quality (1-100)
+  warp_workers: 0  # Threads for warping (0 = auto, 1 = serial). Each worker holds one warped frame in memory.
 
 # Feature matching settings
 matching:

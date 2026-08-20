@@ -48,6 +48,7 @@ class OutputConfig:
     pano_width: int = 4096  # Output panorama width
     output_format: str = "jpg"  # Output format: 'jpg' or 'png'
     jpg_quality: int = 95  # JPEG quality (1-100)
+    warp_workers: int = 0  # Threads for warping (0 = auto, 1 = serial). Each holds one warped frame.
     
     @property
     def pano_height(self) -> int:
@@ -132,6 +133,7 @@ class PipelineConfig:
                 "pano_height": self.output.pano_height,
                 "output_format": self.output.output_format,
                 "jpg_quality": self.output.jpg_quality,
+                "warp_workers": self.output.warp_workers,
             },
             "debug": {
                 "enabled": self.debug.enabled,
@@ -238,6 +240,7 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         pano_width=output_data.get('pano_width', 4096),
         output_format=output_data.get('output_format', 'jpg'),
         jpg_quality=output_data.get('jpg_quality', 95),
+        warp_workers=output_data.get('warp_workers', 0),
     )
     
     debug = DebugConfig(
