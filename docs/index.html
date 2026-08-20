@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2212.5%22%20fill%3D%22none%22%20stroke%3D%22%230E7C74%22%20stroke-width%3D%222.4%22/%3E%3Cellipse%20cx%3D%2216%22%20cy%3D%2216%22%20rx%3D%2212.5%22%20ry%3D%225%22%20fill%3D%22none%22%20stroke%3D%22%230E7C74%22%20stroke-width%3D%221.6%22/%3E%3Cellipse%20cx%3D%2216%22%20cy%3D%2216%22%20rx%3D%225%22%20ry%3D%2212.5%22%20fill%3D%22none%22%20stroke%3D%22%230E7C74%22%20stroke-width%3D%221.6%22/%3E%3C/svg%3E">
+<title>360° Spherical Stitching</title>
+<meta name="description" content="Sweep a room with your phone; get an equirectangular panorama you can look around inside. ORB features, pure-rotation model, spherical warp.">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+:root{
+  --ink:#111A1D; --body:#3A4A50; --muted:#69787E; --hair:#CBD4D6; --hair-soft:#DFE5E6;
+  --paper:#EEF1F0; --surface:#FBFCFC; --field:#E6EBEA;
+  --teal:#0E7C74; --teal-ink:#0A5D57; --amber:#B4551A; --flag:#98302B;
+  --graticule:rgba(17,26,29,.055); --graticule-key:rgba(14,124,116,.16);
+  --shadow:0 1px 1px rgba(17,26,29,.05), 0 14px 34px -22px rgba(17,26,29,.4);
+  --rule:1px solid var(--hair);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ink:#E9F0F1; --body:#AFC0C4; --muted:#7E8F95; --hair:#26343A; --hair-soft:#1C282D;
+    --paper:#0A1013; --surface:#111A1E; --field:#0E171B;
+    --teal:#43B8AA; --teal-ink:#6FD0C3; --amber:#DE8A45; --flag:#E2766C;
+    --graticule:rgba(233,240,241,.05); --graticule-key:rgba(67,184,170,.16);
+    --shadow:0 1px 1px rgba(0,0,0,.4), 0 18px 40px -26px #000;
+  }
+}
+:root[data-theme="dark"]{
+  --ink:#E9F0F1; --body:#AFC0C4; --muted:#7E8F95; --hair:#26343A; --hair-soft:#1C282D;
+  --paper:#0A1013; --surface:#111A1E; --field:#0E171B;
+  --teal:#43B8AA; --teal-ink:#6FD0C3; --amber:#DE8A45; --flag:#E2766C;
+  --graticule:rgba(233,240,241,.05); --graticule-key:rgba(67,184,170,.16);
+  --shadow:0 1px 1px rgba(0,0,0,.4), 0 18px 40px -26px #000;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto} *{animation:none!important;transition:none!important}}
+body{
+  margin:0; background:var(--paper); color:var(--body);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif; font-size:16.5px; line-height:1.62;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  background-image:
+    repeating-linear-gradient(to right, var(--graticule) 0 1px, transparent 1px 96px),
+    repeating-linear-gradient(to bottom, var(--graticule) 0 1px, transparent 1px 96px);
+  background-position:center top;
+}
+h1,h2,h3,h4{font-family:Archivo,"Helvetica Neue",Arial,sans-serif; color:var(--ink); margin:0; text-wrap:balance}
+h1{font-size:clamp(2.6rem,7vw,5.1rem); font-weight:800; line-height:.94; letter-spacing:-.028em}
+h2{font-size:clamp(1.7rem,3.4vw,2.5rem); font-weight:700; line-height:1.06; letter-spacing:-.02em}
+h3{font-size:1.12rem; font-weight:700; letter-spacing:-.005em}
+h4{font-size:.94rem; font-weight:600}
+p{margin:0}
+a{color:var(--teal-ink); text-decoration-thickness:1px; text-underline-offset:3px}
+a:hover{color:var(--teal)}
+:focus-visible{outline:2px solid var(--teal); outline-offset:3px; border-radius:2px}
+code{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:.87em; color:var(--ink);
+  background:var(--field); border:1px solid var(--hair-soft); border-radius:3px; padding:.06em .32em}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:.7rem; letter-spacing:.16em; text-transform:uppercase; color:var(--muted)}
+.wrap{max-width:1220px; margin:0 auto; padding:0 clamp(16px,3.6vw,38px)}
+.col{max-width:64ch}
+
+/* ---------- top bar ---------- */
+.bar{position:sticky; top:0; z-index:40; backdrop-filter:blur(10px);
+  background:color-mix(in srgb, var(--paper) 86%, transparent); border-bottom:var(--rule)}
+.bar-in{display:flex; align-items:center; gap:18px; height:52px}
+.bar strong{font-family:Archivo,sans-serif; font-size:.95rem; letter-spacing:-.01em; color:var(--ink)}
+.bar nav{margin-left:auto; display:flex; gap:20px; align-items:center;
+  font-family:"IBM Plex Mono",monospace; font-size:.74rem; letter-spacing:.08em; text-transform:uppercase}
+.bar nav a{color:var(--muted); text-decoration:none}
+.bar nav a:hover{color:var(--ink)}
+.bar .gh{color:var(--ink); border:var(--rule); border-radius:4px; padding:5px 10px}
+.bar .gh:hover{border-color:var(--teal); color:var(--teal)}
+@media (max-width:640px){.bar nav .hide-s{display:none}}
+
+/* ---------- hero ---------- */
+.hero{padding:clamp(38px,6vw,74px) 0 clamp(30px,4vw,44px)}
+.hero-grid{display:grid; grid-template-columns:minmax(0,1fr); gap:clamp(24px,3vw,38px)}
+@media (min-width:940px){.hero-grid{grid-template-columns:minmax(0,1.05fr) minmax(320px,.85fr); align-items:end}}
+.hero h1 span{display:block; color:var(--teal)}
+.hero-lede{font-size:clamp(1.05rem,1.6vw,1.22rem); max-width:46ch; margin-top:20px}
+.hero-meta{display:flex; flex-wrap:wrap; gap:10px 26px; margin-top:24px}
+.hero-meta div{display:flex; flex-direction:column}
+.hero-meta b{font-family:Archivo,sans-serif; font-size:1.42rem; color:var(--ink); line-height:1.1; font-variant-numeric:tabular-nums}
+.hero-meta span{font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.13em; text-transform:uppercase; color:var(--muted)}
+.cta{display:flex; gap:12px; flex-wrap:wrap; margin-top:30px}
+.btn{display:inline-flex; align-items:center; gap:9px; font-family:"IBM Plex Mono",monospace; font-size:.79rem;
+  letter-spacing:.06em; text-transform:uppercase; text-decoration:none; padding:11px 17px; border-radius:4px;
+  border:1px solid var(--ink); color:var(--paper); background:var(--ink); transition:transform .12s ease, background .12s ease}
+.btn:hover{transform:translateY(-1px); background:var(--teal-ink); border-color:var(--teal-ink); color:#fff}
+.btn.ghost{background:transparent; color:var(--ink); border-color:var(--hair)}
+.btn.ghost:hover{border-color:var(--teal); color:var(--teal); background:transparent}
+
+/* ---------- 360 viewer ---------- */
+.stage{position:relative; padding:26px 0 0 34px}
+.viewer{position:relative; aspect-ratio:2.35/1; border:1px solid var(--hair); border-radius:4px; overflow:hidden;
+  background:var(--field); box-shadow:var(--shadow); cursor:grab; touch-action:none}
+.viewer.dragging{cursor:grabbing}
+.viewer canvas, .viewer img.flat{position:absolute; inset:0; width:100%; height:100%; display:block; object-fit:cover}
+.viewer .hint{position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:3;
+  font-family:"IBM Plex Mono",monospace; font-size:.68rem; letter-spacing:.1em; text-transform:uppercase;
+  color:#fff; background:rgba(9,14,16,.62); padding:6px 12px; border-radius:3px; white-space:nowrap;
+  transition:opacity .35s ease; pointer-events:none}
+.viewer.touched .hint{opacity:0}
+.readout{position:absolute; top:10px; right:10px; z-index:3; display:flex; gap:12px;
+  font-family:"IBM Plex Mono",monospace; font-size:.7rem; color:#fff; background:rgba(9,14,16,.6);
+  padding:6px 10px; border-radius:3px; font-variant-numeric:tabular-nums}
+.readout i{color:rgba(255,255,255,.55); font-style:normal; margin-right:5px}
+.cross{position:absolute; inset:0; z-index:2; opacity:0; transition:opacity .2s ease; pointer-events:none}
+.viewer.dragging .cross{opacity:1}
+.cross::before,.cross::after{content:""; position:absolute; background:rgba(255,255,255,.5)}
+.cross::before{left:50%; top:0; bottom:0; width:1px}
+.cross::after{top:50%; left:0; right:0; height:1px}
+/* rulers */
+.ruler-x{position:absolute; left:34px; right:0; top:0; height:26px; overflow:hidden; border-bottom:var(--rule)}
+.ruler-y{position:absolute; left:0; top:26px; bottom:0; width:34px; overflow:hidden; border-right:var(--rule)}
+.tick{position:absolute; font-family:"IBM Plex Mono",monospace; font-size:.62rem; color:var(--muted);
+  font-variant-numeric:tabular-nums; white-space:nowrap}
+.tick.x{top:0; transform:translateX(-50%); padding-top:2px; text-align:center}
+.tick.x::after{content:""; display:block; width:1px; height:7px; margin:2px auto 0; background:var(--hair)}
+.tick.y{right:5px; transform:translateY(-50%); text-align:right}
+.tick.key{color:var(--teal); font-weight:500}
+.tick.key::after{background:var(--teal); height:11px}
+figcaption{font-size:.88rem; color:var(--muted); margin-top:12px; max-width:70ch}
+
+/* ---------- sections ---------- */
+section{padding:clamp(56px,8vw,104px) 0; border-top:var(--rule)}
+.sec-head{display:flex; flex-direction:column; gap:12px; margin-bottom:clamp(26px,4vw,42px)}
+.sec-head .idx{font-family:"IBM Plex Mono",monospace; font-size:.7rem; letter-spacing:.16em; color:var(--teal)}
+
+/* ---------- pipeline stepper ---------- */
+.steps{display:grid; gap:22px; grid-template-columns:minmax(0,1fr)}
+@media (min-width:900px){.steps{grid-template-columns:236px minmax(0,1fr); gap:34px}}
+.step-list{display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; scrollbar-width:thin}
+@media (min-width:900px){.step-list{flex-direction:column; overflow:visible}}
+.step-btn{flex:0 0 auto; text-align:left; background:transparent; border:1px solid var(--hair-soft); border-radius:4px;
+  padding:11px 13px; cursor:pointer; color:var(--body); font:inherit; display:flex; gap:11px; align-items:baseline;
+  transition:border-color .14s ease, background .14s ease}
+.step-btn:hover{border-color:var(--hair); background:var(--surface)}
+.step-btn em{font-family:"IBM Plex Mono",monospace; font-style:normal; font-size:.72rem; color:var(--muted)}
+.step-btn b{font-family:Archivo,sans-serif; font-size:.95rem; color:var(--ink); font-weight:600; white-space:nowrap}
+.step-btn[aria-selected="true"]{border-color:var(--teal); background:color-mix(in srgb,var(--teal) 8%, var(--surface))}
+.step-btn[aria-selected="true"] em{color:var(--teal)}
+.panel{display:none; flex-direction:column; gap:16px}
+.panel[data-active="true"]{display:flex; animation:fade .34s ease}
+@keyframes fade{from{opacity:0; transform:translateY(5px)} to{opacity:1; transform:none}}
+.panel-img{border:1px solid var(--hair); border-radius:4px; overflow:hidden; background:var(--field);
+  box-shadow:var(--shadow); display:grid; place-items:center; min-height:200px}
+.panel-img img{display:block; width:auto; max-width:100%; height:auto; max-height:min(62vh,540px)}
+.panel-txt{display:grid; gap:16px; align-items:start}
+@media (min-width:720px){.panel-txt{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}}
+.facts{display:flex; flex-direction:column; gap:0; border-top:var(--rule)}
+.facts div{display:flex; justify-content:space-between; gap:14px; padding:7px 0; border-bottom:1px solid var(--hair-soft)}
+.facts dt, .facts span:first-child{font-family:"IBM Plex Mono",monospace; font-size:.72rem; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted)}
+.facts span:last-child{font-family:"IBM Plex Mono",monospace; font-size:.84rem; color:var(--ink); font-variant-numeric:tabular-nums}
+
+/* ---------- wipe comparator ---------- */
+.cmp{position:relative; overflow:hidden; border:1px solid var(--hair); border-radius:4px; background:var(--field);
+  box-shadow:var(--shadow); touch-action:pan-y}
+.cmp img{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; user-select:none}
+.cmp .top{clip-path:inset(0 calc(100% - var(--pos,50%)) 0 0)}
+.cmp .line{position:absolute; top:0; bottom:0; left:var(--pos,50%); width:2px; margin-left:-1px;
+  background:rgba(255,255,255,.94); box-shadow:0 0 0 1px rgba(0,0,0,.35); pointer-events:none}
+.cmp .grip{position:absolute; top:50%; left:50%; width:28px; height:28px; margin:-14px 0 0 -14px; border-radius:50%;
+  background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.3); display:grid; place-items:center;
+  font-size:12px; color:#111A1D; font-family:"IBM Plex Mono",monospace}
+.cmp .tag{position:absolute; top:9px; font-family:"IBM Plex Mono",monospace; font-size:.64rem; letter-spacing:.1em;
+  text-transform:uppercase; padding:4px 8px; border-radius:3px; color:#fff; pointer-events:none}
+.cmp .tag.l{left:9px; background:rgba(10,80,74,.9)}
+.cmp .tag.r{right:9px; background:rgba(126,58,16,.9)}
+.cmp input[type=range]{position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:ew-resize}
+.cmp:focus-within{outline:2px solid var(--teal); outline-offset:2px}
+.tiles{display:grid; gap:22px; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); margin-top:26px}
+.tile figcaption{margin-top:10px}
+
+/* ---------- filmstrip ---------- */
+.strip-shell{border:1px solid var(--hair); border-radius:4px; background:var(--surface); box-shadow:var(--shadow); overflow:hidden}
+.strip-head{display:flex; align-items:center; gap:16px; padding:11px 14px; border-bottom:var(--rule); flex-wrap:wrap}
+.strip-head .lbl{font-family:"IBM Plex Mono",monospace; font-size:.7rem; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--muted)}
+.strip-head .val{font-family:"IBM Plex Mono",monospace; font-size:.82rem; color:var(--ink); font-variant-numeric:tabular-nums}
+.strip-head .val b{color:var(--teal); font-weight:500}
+.strip{display:flex; gap:4px; align-items:flex-start; overflow-x:auto; padding:12px 14px; scroll-snap-type:x proximity}
+.strip::-webkit-scrollbar{height:9px}
+.strip::-webkit-scrollbar-thumb{background:var(--hair); border-radius:9px}
+.frame{flex:0 0 auto; padding:0 0 3px; border:1px solid transparent; border-radius:2px; background:none;
+  cursor:pointer; line-height:0; scroll-snap-align:center; display:flex; flex-direction:column; gap:4px;
+  transition:transform .14s ease, border-color .14s ease}
+.frame img{width:64px; height:auto; display:block; border-radius:1px; filter:saturate(.92) brightness(.94)}
+.frame:hover{transform:translateY(-3px); border-color:var(--hair)}
+.frame[aria-current="true"]{border-color:var(--teal); transform:translateY(-3px)}
+.frame[aria-current="true"] img{filter:none}
+.frame b{font-family:"IBM Plex Mono",monospace; font-size:.56rem; line-height:1; font-weight:400; color:var(--muted);
+  text-align:center; font-variant-numeric:tabular-nums}
+.frame[aria-current="true"] b, .frame:hover b{color:var(--teal)}
+
+/* ---------- misc blocks ---------- */
+.two{display:grid; gap:clamp(24px,3vw,40px); grid-template-columns:minmax(0,1fr)}
+@media (min-width:860px){.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+.card{background:var(--surface); border:1px solid var(--hair); border-radius:4px; padding:20px 22px;
+  display:flex; flex-direction:column; gap:11px; box-shadow:var(--shadow)}
+.card.flagged{border-left:3px solid var(--flag)}
+pre{margin:0; background:var(--surface); border:1px solid var(--hair); border-radius:4px; padding:16px 18px;
+  overflow-x:auto; font-family:"IBM Plex Mono",monospace; font-size:.82rem; line-height:1.75; color:var(--ink)}
+pre .c{color:var(--muted)}
+pre .k{color:var(--teal-ink)}
+ul{margin:0; padding-left:1.1em; display:flex; flex-direction:column; gap:9px}
+li::marker{color:var(--teal)}
+.kv{display:grid; grid-template-columns:auto 1fr; gap:5px 16px; font-size:.92rem}
+.kv dt{font-family:"IBM Plex Mono",monospace; font-size:.72rem; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--muted); padding-top:3px}
+.kv dd{margin:0; color:var(--ink)}
+footer{border-top:var(--rule); padding:34px 0 54px; display:flex; gap:16px 30px; flex-wrap:wrap; align-items:baseline}
+footer .eyebrow{margin-right:auto}
+.scroll-x{overflow-x:auto}
+table{border-collapse:collapse; width:100%; font-size:.9rem; min-width:520px}
+@media (max-width:700px){
+  .viewer{aspect-ratio:16/10}          /* the gutter stays 34px: +15° needs the room */
+  .tick{font-size:.58rem}
+}
+th,td{text-align:left; padding:9px 16px 9px 0; border-bottom:1px solid var(--hair-soft); white-space:nowrap}
+th{font-family:"IBM Plex Mono",monospace; font-size:.68rem; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--muted); font-weight:400}
+td.n{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-variant-numeric:tabular-nums}
+</style>
+
+</head>
+<body>
+<header class="bar">
+  <div class="wrap bar-in">
+    <strong>360° Spherical Stitching</strong>
+    <nav>
+      <a href="#pipeline" class="hide-s">Pipeline</a>
+      <a href="#drift" class="hide-s">Drift</a>
+      <a href="#sweep" class="hide-s">Sweep</a>
+      <a href="#run">Run it</a>
+      <a href="https://github.com/Kronbii/360-spherical-stitching" class="gh" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap hero">
+  <div class="hero-grid">
+    <div>
+      <p class="eyebrow">ORB features · pure-rotation model · equirectangular output</p>
+      <h1>Sweep a room.<span>Get a sphere.</span></h1>
+      <p class="hero-lede">Point your phone at the scene, rotate once, and this pipeline turns the frames into a
+      seamless 360° panorama — geometry recovered from features alone, no gyroscope, no tripod, no stitching app.</p>
+      <div class="cta">
+        <a class="btn" href="https://github.com/Kronbii/360-spherical-stitching" rel="noopener">Clone the repo</a>
+        <a class="btn ghost" href="#pipeline">See how it works</a>
+      </div>
+    </div>
+    <div class="hero-meta">
+      <div><b>309</b><span>frames in</span></div>
+      <div><b>333°</b><span>recovered sweep</span></div>
+      <div><b>4096×2048</b><span>equirect out</span></div>
+      <div><b>921</b><span>inliers / pair</span></div>
+    </div>
+  </div>
+
+  <figure class="stage" style="margin:34px 0 0">
+    <div class="ruler-x" id="rx" aria-hidden="true"></div>
+    <div class="ruler-y" id="ry" aria-hidden="true"></div>
+    <div class="viewer" id="viewer" tabindex="0" role="application"
+         aria-label="Interactive 360 degree panorama. Drag or use arrow keys to look around, scroll to zoom.">
+      <img class="flat" id="flat" src="assets/hero_pano.jpg" alt="Equirectangular panorama of a living room, stitched from 309 phone frames">
+      <div class="cross" aria-hidden="true"></div>
+      <div class="readout mono" aria-hidden="true">
+        <span><i>yaw</i><b id="r-yaw">0.0°</b></span>
+        <span><i>pitch</i><b id="r-pitch">0.0°</b></span>
+        <span><i>fov</i><b id="r-fov">76°</b></span>
+      </div>
+      <p class="hint">Drag to look · scroll to zoom</p>
+    </div>
+    <figcaption>The output of a single handheld sweep, projected back to a sphere in the browser. The rulers read true
+    yaw and pitch — the same angles the pipeline solved for. Every pixel here came out of <code>panorama.jpg</code>.</figcaption>
+  </figure>
+</div>
+
+<section id="pipeline">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="idx">01 — Pipeline</p>
+      <h2>Four stages from frames to sphere</h2>
+      <p class="col">The run below is real: 309 frames pulled from a phone video, matched pair by pair, chained
+      into global rotations, then inverse-mapped onto an equirectangular canvas. Numbers are from that run, not a demo.</p>
+    </div>
+    <div class="steps">
+      <div class="step-list" role="tablist" aria-label="Pipeline stages">
+        <button class="step-btn" role="tab" id="tab-1" aria-controls="pan-1" aria-selected="true"><em>01</em><b>Extract</b></button>
+        <button class="step-btn" role="tab" id="tab-2" aria-controls="pan-2" aria-selected="false"><em>02</em><b>Match</b></button>
+        <button class="step-btn" role="tab" id="tab-3" aria-controls="pan-3" aria-selected="false"><em>03</em><b>Warp</b></button>
+        <button class="step-btn" role="tab" id="tab-4" aria-controls="pan-4" aria-selected="false"><em>04</em><b>Blend</b></button>
+      </div>
+      <div>
+        <div class="panel" id="pan-1" role="tabpanel" aria-labelledby="tab-1" data-active="true">
+          <div class="panel-img"><img src="assets/stage1_frame.jpg" alt="A single frame extracted from the source video: a living room with a teal sofa" loading="lazy"></div>
+          <div class="panel-txt">
+            <div><h3>One frame off the phone</h3><p>Frames come straight out of the video — every 2nd frame here, which
+            lands about 1.1° apart. Focal length comes from EXIF when it's there and from <code>hfov_deg</code> when it
+            isn't; this clip runs on a 42° horizontal field of view, fx = fy = 1475 px.</p></div>
+            <div class="facts">
+              <div><span>source</span><span>IMG_1480_2.MOV</span></div>
+              <div><span>method</span><span>interval, every 2nd</span></div>
+              <div><span>frame size</span><span>1080×1920</span></div>
+              <div><span>step</span><span>1.08° / frame</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" id="pan-2" role="tabpanel" aria-labelledby="tab-2">
+          <div class="panel-img"><img src="assets/stage2_matches.jpg" alt="Two consecutive frames side by side with teal lines linking matched ORB features and amber lines showing rejected outliers" loading="lazy"></div>
+          <div class="panel-txt">
+            <div><h3>Features, then a homography</h3><p>ORB finds 3,000 keypoints per frame; Lowe's ratio test keeps
+            1,574 of the pairings, and RANSAC certifies 1,530 of those as one consistent homography — the teal
+            lines. Amber lines are the rejects it threw out. Notice the blank roller blind contributes almost nothing:
+            texture carries the estimate, flat walls freeload.</p></div>
+            <div class="facts">
+              <div><span>pair</span><span>frame 150 → 151</span></div>
+              <div><span>keypoints</span><span>3,000</span></div>
+              <div><span>ratio test</span><span>1,574 kept</span></div>
+              <div><span>ransac inliers</span><span>1,530</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" id="pan-3" role="tabpanel" aria-labelledby="tab-3">
+          <div class="panel-img"><img src="assets/stage3_many.jpg" alt="Partial equirectangular canvas with a horizontal band of the room filled in and the rest black" loading="lazy"></div>
+          <div class="panel-txt">
+            <div><h3>Rotation only, projected out</h3><p>Each homography becomes a pure rotation via
+            <code>R = K⁻¹HK</code>, orthonormalized with SVD so it stays a real rotation, then chained frame to frame.
+            Every frame is inverse-mapped onto the sphere at its own angle. One frame alone covers 4.0% of the
+            canvas; this partial sweep is 26 of them.</p></div>
+            <div class="facts">
+              <div><span>model</span><span>H = K·R·K⁻¹</span></div>
+              <div><span>one frame</span><span>4.0% of sphere</span></div>
+              <div><span>shown here</span><span>26 frames, 14.2%</span></div>
+              <div><span>full run</span><span>36.9% of sphere</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" id="pan-4" role="tabpanel" aria-labelledby="tab-4">
+          <div class="panel-img"><img src="assets/stage4_pano.jpg" alt="The finished equirectangular panorama, a full 360 degree view of the living room" loading="lazy"></div>
+          <div class="panel-txt">
+            <div><h3>All 309 placed</h3><p>The rest of the sweep fills the band, overlaps resolve by the chosen
+            blend mode — <code>sharp</code>, <code>feather</code>, <code>multiband</code>, or none — and the poles a
+            phone-height sweep never saw get filled from their surroundings. That's the image in the viewer above.</p></div>
+            <div class="facts">
+              <div><span>output</span><span>4096×2048 jpg</span></div>
+              <div><span>coverage</span><span>36.9% imaged</span></div>
+              <div><span>recovered pairs</span><span>15 interpolated</span></div>
+              <div><span>blend</span><span>configurable</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="drift">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="idx">02 — The hard part</p>
+      <h2>Small angle errors, loud results</h2>
+      <p class="col">Each pair's rotation is solved independently, so every frame arrives with its own few tenths of a
+      degree of pitch and roll error. Across a 42° field of view at 4096 px wide that's several pixels of vertical
+      offset per frame — and since neighbours overlap heavily, every seam leaves a step. Drag the dividers: left is
+      smoothed, right is the raw chain.</p>
+    </div>
+    <figure class="cmp-fig">
+      <div class="cmp" style="--pos:50%; aspect-ratio:5.35/1">
+        <img class="base" src="assets/pano_off_band.jpg" alt="Panorama band built from raw rotations" loading="lazy">
+        <img class="top" src="assets/pano_on_band.jpg" alt="Panorama band built from smoothed rotations" loading="lazy">
+        <span class="line" aria-hidden="true"><span class="grip">⟷</span></span>
+        <span class="tag l">smoothed</span><span class="tag r">raw</span>
+        <input type="range" min="0" max="100" step=".1" value="50" aria-label="Wipe between smoothed and raw panorama">
+      </div>
+      <figcaption>Same 309 frames, same intrinsics, same matcher — the only difference is whether a moving
+      window runs over the chained rotations before warping. Cropped to the band the sweep actually imaged,
+      +31° down to −37° elevation.</figcaption>
+    </figure>
+    <div class="tiles">
+      <figure class="tile">
+        <div class="cmp" style="--pos:50%; aspect-ratio:1/1">
+          <img class="base" src="assets/rail_off.jpg" alt="Curtain rail crop, raw rotations, edges broken into steps" loading="lazy">
+          <img class="top" src="assets/rail_on.jpg" alt="Curtain rail crop, smoothed rotations, edges continuous" loading="lazy">
+          <span class="line" aria-hidden="true"><span class="grip">⟷</span></span>
+          <span class="tag l">smoothed</span><span class="tag r">raw</span>
+          <input type="range" min="0" max="100" step=".1" value="50" aria-label="Wipe: curtain rail crop">
+        </div>
+        <figcaption>The rail and the sofa's gold trim break into rungs, one per seam.</figcaption>
+      </figure>
+      <figure class="tile">
+        <div class="cmp" style="--pos:50%; aspect-ratio:1/1">
+          <img class="base" src="assets/doorway_off.jpg" alt="Doorway crop, raw rotations" loading="lazy">
+          <img class="top" src="assets/doorway_on.jpg" alt="Doorway crop, smoothed rotations" loading="lazy">
+          <span class="line" aria-hidden="true"><span class="grip">⟷</span></span>
+          <span class="tag l">smoothed</span><span class="tag r">raw</span>
+          <input type="range" min="0" max="100" step=".1" value="50" aria-label="Wipe: doorway crop">
+        </div>
+        <figcaption>A dark lintel shears into blocks where frames disagree.</figcaption>
+      </figure>
+      <figure class="tile">
+        <div class="cmp" style="--pos:50%; aspect-ratio:1/1">
+          <img class="base" src="assets/coving_off.jpg" alt="Ceiling coving crop, raw rotations" loading="lazy">
+          <img class="top" src="assets/coving_on.jpg" alt="Ceiling coving crop, smoothed rotations" loading="lazy">
+          <span class="line" aria-hidden="true"><span class="grip">⟷</span></span>
+          <span class="tag l">smoothed</span><span class="tag r">raw</span>
+          <input type="range" min="0" max="100" step=".1" value="50" aria-label="Wipe: ceiling coving crop">
+        </div>
+        <figcaption>Even low-texture coving arrives serrated.</figcaption>
+      </figure>
+    </div>
+    <div class="two" style="margin-top:38px">
+      <div class="card">
+        <h3>What the window fixes</h3>
+        <p>A moving average over the chained rotations — window 17 on this run — collapses the frame-to-frame
+        wobble while leaving the sweep itself alone. Measured on the run above:</p>
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Angle</th><th>Raw wobble</th><th>Smoothed</th><th></th></tr></thead>
+            <tbody>
+              <tr><td>Pitch</td><td class="n">0.085°</td><td class="n">0.006°</td><td class="n">13.5× quieter</td></tr>
+              <tr><td>Roll</td><td class="n">0.123°</td><td class="n">0.024°</td><td class="n">5.2× quieter</td></tr>
+              <tr><td>Yaw</td><td class="n">0.209°</td><td class="n">0.278°</td><td class="n">left alone</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="eyebrow" style="margin-top:4px">Wobble = std. dev. of the second difference, sweep removed</p>
+      </div>
+      <div class="card flagged">
+        <h3>And what it costs</h3>
+        <p>Averaging isn't free. Failed pairs — 15 of them here — get filled from their neighbours before the
+        window ever runs, so a bad estimate spreads a little before it's damped. And at the ends of the sequence the
+        window has nothing to average against: on this clip the last frames get dragged back and the final one snaps
+        forward by <b>5.4°</b>, against a largest honest step of 1.9°.</p>
+        <p>Fixes worth making: reflect the sequence at the edges instead of clamping the window, and taper the endpoints
+        instead of exempting them.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="sweep">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="idx">03 — The sweep</p>
+      <h2>Every frame knows where it points</h2>
+      <p class="col">These are real frames from the run, evenly sampled across the sweep, each labelled with the yaw the
+      pipeline solved for it. Pick one and the viewer above turns to face it.</p>
+    </div>
+    <div class="strip-shell">
+      <div class="strip-head">
+        <span class="lbl">frame</span><span class="val" id="s-idx">—</span>
+        <span class="lbl">solved yaw</span><span class="val"><b id="s-yaw">—</b></span>
+        <span class="lbl">pitch</span><span class="val" id="s-pitch">—</span>
+        <span class="lbl" style="margin-left:auto">click to aim the viewer</span>
+      </div>
+      <div class="strip" id="strip"><button class="frame" data-i="0" data-yaw="0.00" data-pitch="-0.00" aria-label="Frame 0, yaw 0 degrees"><img src="assets/strip/f00.jpg" alt="" loading="lazy" width="64"><b>0°</b></button>
+<button class="frame" data-i="7" data-yaw="-0.22" data-pitch="-0.01" aria-label="Frame 7, yaw -0 degrees"><img src="assets/strip/f01.jpg" alt="" loading="lazy" width="64"><b>0°</b></button>
+<button class="frame" data-i="14" data-yaw="-0.91" data-pitch="-0.03" aria-label="Frame 14, yaw -1 degrees"><img src="assets/strip/f02.jpg" alt="" loading="lazy" width="64"><b>-1°</b></button>
+<button class="frame" data-i="21" data-yaw="-2.58" data-pitch="-0.07" aria-label="Frame 21, yaw -3 degrees"><img src="assets/strip/f03.jpg" alt="" loading="lazy" width="64"><b>-3°</b></button>
+<button class="frame" data-i="29" data-yaw="-6.49" data-pitch="-0.17" aria-label="Frame 29, yaw -6 degrees"><img src="assets/strip/f04.jpg" alt="" loading="lazy" width="64"><b>-6°</b></button>
+<button class="frame" data-i="36" data-yaw="-11.67" data-pitch="-0.37" aria-label="Frame 36, yaw -12 degrees"><img src="assets/strip/f05.jpg" alt="" loading="lazy" width="64"><b>-12°</b></button>
+<button class="frame" data-i="43" data-yaw="-17.83" data-pitch="-0.64" aria-label="Frame 43, yaw -18 degrees"><img src="assets/strip/f06.jpg" alt="" loading="lazy" width="64"><b>-18°</b></button>
+<button class="frame" data-i="50" data-yaw="-24.57" data-pitch="-0.93" aria-label="Frame 50, yaw -25 degrees"><img src="assets/strip/f07.jpg" alt="" loading="lazy" width="64"><b>-25°</b></button>
+<button class="frame" data-i="57" data-yaw="-31.19" data-pitch="-1.15" aria-label="Frame 57, yaw -31 degrees"><img src="assets/strip/f08.jpg" alt="" loading="lazy" width="64"><b>-31°</b></button>
+<button class="frame" data-i="64" data-yaw="-37.51" data-pitch="-1.41" aria-label="Frame 64, yaw -38 degrees"><img src="assets/strip/f09.jpg" alt="" loading="lazy" width="64"><b>-38°</b></button>
+<button class="frame" data-i="72" data-yaw="-44.92" data-pitch="-1.80" aria-label="Frame 72, yaw -45 degrees"><img src="assets/strip/f10.jpg" alt="" loading="lazy" width="64"><b>-45°</b></button>
+<button class="frame" data-i="79" data-yaw="-52.02" data-pitch="-2.39" aria-label="Frame 79, yaw -52 degrees"><img src="assets/strip/f11.jpg" alt="" loading="lazy" width="64"><b>-52°</b></button>
+<button class="frame" data-i="86" data-yaw="-59.36" data-pitch="-2.96" aria-label="Frame 86, yaw -59 degrees"><img src="assets/strip/f12.jpg" alt="" loading="lazy" width="64"><b>-59°</b></button>
+<button class="frame" data-i="93" data-yaw="-67.02" data-pitch="-3.53" aria-label="Frame 93, yaw -67 degrees"><img src="assets/strip/f13.jpg" alt="" loading="lazy" width="64"><b>-67°</b></button>
+<button class="frame" data-i="100" data-yaw="-74.97" data-pitch="-4.09" aria-label="Frame 100, yaw -75 degrees"><img src="assets/strip/f14.jpg" alt="" loading="lazy" width="64"><b>-75°</b></button>
+<button class="frame" data-i="107" data-yaw="-82.93" data-pitch="-4.61" aria-label="Frame 107, yaw -83 degrees"><img src="assets/strip/f15.jpg" alt="" loading="lazy" width="64"><b>-83°</b></button>
+<button class="frame" data-i="115" data-yaw="-91.68" data-pitch="-4.89" aria-label="Frame 115, yaw -92 degrees"><img src="assets/strip/f16.jpg" alt="" loading="lazy" width="64"><b>-92°</b></button>
+<button class="frame" data-i="122" data-yaw="-99.03" data-pitch="-5.09" aria-label="Frame 122, yaw -99 degrees"><img src="assets/strip/f17.jpg" alt="" loading="lazy" width="64"><b>-99°</b></button>
+<button class="frame" data-i="129" data-yaw="-106.30" data-pitch="-5.27" aria-label="Frame 129, yaw -106 degrees"><img src="assets/strip/f18.jpg" alt="" loading="lazy" width="64"><b>-106°</b></button>
+<button class="frame" data-i="136" data-yaw="-114.11" data-pitch="-5.47" aria-label="Frame 136, yaw -114 degrees"><img src="assets/strip/f19.jpg" alt="" loading="lazy" width="64"><b>-114°</b></button>
+<button class="frame" data-i="143" data-yaw="-121.75" data-pitch="-5.68" aria-label="Frame 143, yaw -122 degrees"><img src="assets/strip/f20.jpg" alt="" loading="lazy" width="64"><b>-122°</b></button>
+<button class="frame" data-i="150" data-yaw="-129.35" data-pitch="-5.79" aria-label="Frame 150, yaw -129 degrees"><img src="assets/strip/f21.jpg" alt="" loading="lazy" width="64"><b>-129°</b></button>
+<button class="frame" data-i="158" data-yaw="-138.27" data-pitch="-5.92" aria-label="Frame 158, yaw -138 degrees"><img src="assets/strip/f22.jpg" alt="" loading="lazy" width="64"><b>-138°</b></button>
+<button class="frame" data-i="165" data-yaw="-146.44" data-pitch="-6.21" aria-label="Frame 165, yaw -146 degrees"><img src="assets/strip/f23.jpg" alt="" loading="lazy" width="64"><b>-146°</b></button>
+<button class="frame" data-i="172" data-yaw="-155.58" data-pitch="-6.33" aria-label="Frame 172, yaw -156 degrees"><img src="assets/strip/f24.jpg" alt="" loading="lazy" width="64"><b>-156°</b></button>
+<button class="frame" data-i="179" data-yaw="-165.41" data-pitch="-6.26" aria-label="Frame 179, yaw -165 degrees"><img src="assets/strip/f25.jpg" alt="" loading="lazy" width="64"><b>-165°</b></button>
+<button class="frame" data-i="186" data-yaw="-175.76" data-pitch="-6.04" aria-label="Frame 186, yaw -176 degrees"><img src="assets/strip/f26.jpg" alt="" loading="lazy" width="64"><b>-176°</b></button>
+<button class="frame" data-i="193" data-yaw="173.71" data-pitch="-5.72" aria-label="Frame 193, yaw 174 degrees"><img src="assets/strip/f27.jpg" alt="" loading="lazy" width="64"><b>+174°</b></button>
+<button class="frame" data-i="201" data-yaw="161.95" data-pitch="-5.12" aria-label="Frame 201, yaw 162 degrees"><img src="assets/strip/f28.jpg" alt="" loading="lazy" width="64"><b>+162°</b></button>
+<button class="frame" data-i="208" data-yaw="152.23" data-pitch="-4.45" aria-label="Frame 208, yaw 152 degrees"><img src="assets/strip/f29.jpg" alt="" loading="lazy" width="64"><b>+152°</b></button>
+<button class="frame" data-i="215" data-yaw="142.83" data-pitch="-3.87" aria-label="Frame 215, yaw 143 degrees"><img src="assets/strip/f30.jpg" alt="" loading="lazy" width="64"><b>+143°</b></button>
+<button class="frame" data-i="222" data-yaw="133.79" data-pitch="-3.38" aria-label="Frame 222, yaw 134 degrees"><img src="assets/strip/f31.jpg" alt="" loading="lazy" width="64"><b>+134°</b></button>
+<button class="frame" data-i="229" data-yaw="125.05" data-pitch="-2.88" aria-label="Frame 229, yaw 125 degrees"><img src="assets/strip/f32.jpg" alt="" loading="lazy" width="64"><b>+125°</b></button>
+<button class="frame" data-i="236" data-yaw="116.61" data-pitch="-2.31" aria-label="Frame 236, yaw 117 degrees"><img src="assets/strip/f33.jpg" alt="" loading="lazy" width="64"><b>+117°</b></button>
+<button class="frame" data-i="244" data-yaw="107.15" data-pitch="-1.62" aria-label="Frame 244, yaw 107 degrees"><img src="assets/strip/f34.jpg" alt="" loading="lazy" width="64"><b>+107°</b></button>
+<button class="frame" data-i="251" data-yaw="98.66" data-pitch="-0.98" aria-label="Frame 251, yaw 99 degrees"><img src="assets/strip/f35.jpg" alt="" loading="lazy" width="64"><b>+99°</b></button>
+<button class="frame" data-i="258" data-yaw="89.92" data-pitch="-0.43" aria-label="Frame 258, yaw 90 degrees"><img src="assets/strip/f36.jpg" alt="" loading="lazy" width="64"><b>+90°</b></button>
+<button class="frame" data-i="265" data-yaw="80.40" data-pitch="-0.02" aria-label="Frame 265, yaw 80 degrees"><img src="assets/strip/f37.jpg" alt="" loading="lazy" width="64"><b>+80°</b></button>
+<button class="frame" data-i="272" data-yaw="70.57" data-pitch="0.25" aria-label="Frame 272, yaw 71 degrees"><img src="assets/strip/f38.jpg" alt="" loading="lazy" width="64"><b>+71°</b></button>
+<button class="frame" data-i="279" data-yaw="61.22" data-pitch="0.42" aria-label="Frame 279, yaw 61 degrees"><img src="assets/strip/f39.jpg" alt="" loading="lazy" width="64"><b>+61°</b></button>
+<button class="frame" data-i="287" data-yaw="52.34" data-pitch="0.71" aria-label="Frame 287, yaw 52 degrees"><img src="assets/strip/f40.jpg" alt="" loading="lazy" width="64"><b>+52°</b></button>
+<button class="frame" data-i="294" data-yaw="44.61" data-pitch="0.88" aria-label="Frame 294, yaw 45 degrees"><img src="assets/strip/f41.jpg" alt="" loading="lazy" width="64"><b>+45°</b></button>
+<button class="frame" data-i="301" data-yaw="36.65" data-pitch="0.89" aria-label="Frame 301, yaw 37 degrees"><img src="assets/strip/f42.jpg" alt="" loading="lazy" width="64"><b>+37°</b></button>
+<button class="frame" data-i="308" data-yaw="27.47" data-pitch="0.76" aria-label="Frame 308, yaw 27 degrees"><img src="assets/strip/f43.jpg" alt="" loading="lazy" width="64"><b>+27°</b></button></div>
+    </div>
+    <div class="two" style="margin-top:34px">
+      <div class="card">
+        <h3>Handheld, and it shows</h3>
+        <p>The sweep starts almost stationary — 0.03° per frame for the first dozen — then settles to a steady
+        1.08° per frame and finishes mid-motion at about 1.2°. Pitch wanders over 7.2° across the sweep because
+        an arm is not a tripod; that wander is exactly what the rotation chain has to absorb.</p>
+      </div>
+      <div class="card">
+        <h3>When matching fails</h3>
+        <p>15 of 308 pairs never reached the 200-inlier threshold — blank wall, blown
+        highlight, too fast a turn. Rather than dropping those frames, the pipeline borrows the rotation from a
+        neighbour, or averages the two around it, and carries on.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="run">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="idx">04 — Run it</p>
+      <h2>Your own sweep, four commands</h2>
+    </div>
+    <div class="two">
+      <div style="display:flex; flex-direction:column; gap:18px">
+        <pre><span class="c"># 1 — get it</span>
+git clone https://github.com/Kronbii/360-spherical-stitching.git
+cd 360-spherical-stitching
+pip install -r requirements.txt
+
+<span class="c"># 2 — point config.yaml at your video or photos</span>
+<span class="c"># 3 — stitch</span>
+python run.py config.yaml
+
+<span class="c"># 4 — look around</span>
+open output/&lt;name&gt;/viewer/index.html</pre>
+        <p class="col">A video gets its frames pulled automatically; a folder of stills works just as well. Every knob
+        lives in one YAML file, and the run prints a rotation summary as it goes so you can see the sweep add up.</p>
+        <dl class="kv">
+          <dt>Docs</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/blob/main/USAGE.md" rel="noopener">USAGE.md</a> — every option, with defaults</dd>
+          <dt>Method</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/blob/main/TECHNICAL.md" rel="noopener">TECHNICAL.md</a> — the geometry, written out</dd>
+          <dt>Smoothing</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/blob/main/TEMPORAL_SMOOTHING.md" rel="noopener">TEMPORAL_SMOOTHING.md</a> — window sizing</dd>
+          <dt>Needs</dt><dd>Python 3.12, OpenCV, NumPy. No GPU.</dd>
+        </dl>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:18px">
+        <pre><span class="k">video</span>: ./IMG_1480_2.MOV
+<span class="k">output_dir</span>: ./output/livingroom
+
+<span class="k">video_extraction</span>:
+  <span class="k">method</span>: interval     <span class="c"># uniform · fps · motion</span>
+  <span class="k">frame_interval</span>: 2
+
+<span class="k">matching</span>:
+  <span class="k">match_full_res</span>: true
+  <span class="k">min_inliers</span>: 200
+  <span class="k">rotation_smoothing_window</span>: 17
+
+<span class="k">intrinsics</span>:
+  <span class="k">hfov_deg</span>: 42
+
+<span class="k">output</span>:
+  <span class="k">pano_width</span>: 4096</pre>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="wrap">
+  <p class="eyebrow">360° Spherical Stitching · MIT · built with OpenCV and NumPy</p>
+  <a href="https://github.com/Kronbii/360-spherical-stitching" rel="noopener">github.com/Kronbii/360-spherical-stitching</a>
+</footer>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ viewer */
+const VIEW = (() => {
+  const el = document.getElementById("viewer");
+  const flat = document.getElementById("flat");
+  const gl_canvas = document.createElement("canvas");
+  const gl = gl_canvas.getContext("webgl", {antialias:false, alpha:false});
+  const out = {yaw:0, pitch:0, fov:76, ready:false, aimAt:null};
+  if (!gl) return out;                                  // no webgl: keep the flat image
+
+  const VS = "attribute vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }";
+  const FS = [
+    "precision highp float;",
+    "uniform vec2 uRes; uniform float uYaw, uPitch, uTanH, uTanV; uniform sampler2D uTex;",
+    "void main(){",
+    "  vec2 uv = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;",
+    "  vec3 d = normalize(vec3(uv.x * uTanH, -uv.y * uTanV, 1.0));",   // world y is down
+    "  float cp = cos(uPitch), sp = sin(uPitch);",
+    "  d = vec3(d.x, cp*d.y - sp*d.z, sp*d.y + cp*d.z);",   // pitch about X
+    "  float cy = cos(uYaw), sy = sin(uYaw);",
+    "  d = vec3(cy*d.x + sy*d.z, d.y, -sy*d.x + cy*d.z);",  // yaw about Y
+    "  float theta = atan(d.x, d.z);",
+    "  float phi = asin(clamp(d.y, -1.0, 1.0));",
+    "  gl_FragColor = texture2D(uTex, vec2(0.5 + theta / 6.2831853, 0.5 + phi / 3.1415927));",
+    "}"
+  ].join("\n");
+  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p");
+  gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const U = n => gl.getUniformLocation(prog, n);
+  const uRes = U("uRes"), uYaw = U("uYaw"), uPitch = U("uPitch"), uTanH = U("uTanH"), uTanV = U("uTanV");
+
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const pot = n => (n & (n - 1)) === 0;
+
+  const img = new Image();
+  img.decoding = "async";
+  img.onload = () => {
+    try {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      // WebGL1 only wraps power-of-two textures; a non-POT one with REPEAT samples black
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,
+                       pot(img.naturalWidth) && pot(img.naturalHeight) ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+    } catch (err) { gl_canvas.remove(); return; }   // opaque-origin image: keep the flat view
+    el.insertBefore(gl_canvas, flat);
+    flat.style.display = "none";
+    out.ready = true;
+    resize(); draw();
+  };
+  img.onerror = () => { gl_canvas.remove(); };
+  img.src = flat.currentSrc || flat.src;
+
+  let dpr = 1;
+  function resize(){
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const r = el.getBoundingClientRect();
+    gl_canvas.width = Math.max(1, Math.round(r.width * dpr));
+    gl_canvas.height = Math.max(1, Math.round(r.height * dpr));
+    gl.viewport(0, 0, gl_canvas.width, gl_canvas.height);
+  }
+  out.tan = () => {
+    const r = el.getBoundingClientRect();
+    const tanH = Math.tan(out.fov * Math.PI / 360);
+    return {tanH, tanV: tanH * (r.height / Math.max(r.width, 1)), w:r.width, h:r.height};
+  };
+  function draw(){
+    if (!out.ready) return;
+    const t = out.tan();
+    gl.uniform2f(uRes, gl_canvas.width, gl_canvas.height);
+    gl.uniform1f(uYaw, out.yaw * Math.PI / 180);
+    gl.uniform1f(uPitch, out.pitch * Math.PI / 180);
+    gl.uniform1f(uTanH, t.tanH);
+    gl.uniform1f(uTanV, t.tanV);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  out.draw = draw;
+  out.resize = () => { resize(); draw(); };
+  return out;
+})();
+
+/* ------------------------------------------------- interaction + graticule */
+(() => {
+  const el = document.getElementById("viewer");
+  const rx = document.getElementById("rx"), ry = document.getElementById("ry");
+  const rYaw = document.getElementById("r-yaw"), rPitch = document.getElementById("r-pitch"), rFov = document.getElementById("r-fov");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let idle = true, aim = null, last = 0;
+
+  const wrapDeg = d => { d = (d + 180) % 360; return (d < 0 ? d + 360 : d) - 180; };
+
+  function ticks(){
+    if (!VIEW.tan) return;
+    const t = VIEW.tan();
+    let hx = "", hy = "";
+    for (let d = -180; d < 180; d += 15){
+      const rel = wrapDeg(d - VIEW.yaw);
+      if (Math.abs(rel) > VIEW.fov * 0.52) continue;
+      const x = t.w / 2 * (1 + Math.tan(rel * Math.PI / 180) / t.tanH);
+      const key = d === 0 || Math.abs(d) === 90 || Math.abs(d) === 180;
+      hx += '<span class="tick x' + (key ? ' key' : '') + '" style="left:' + x.toFixed(1) + 'px">' +
+            (d > 0 ? "+" : "") + d + "°</span>";
+    }
+    const fovV = Math.atan(t.tanV) * 360 / Math.PI;
+    for (let d = -75; d <= 75; d += 15){
+      const rel = d - VIEW.pitch;
+      if (Math.abs(rel) > fovV * 0.52) continue;
+      const y = t.h / 2 * (1 - Math.tan(rel * Math.PI / 180) / t.tanV);
+      hy += '<span class="tick y' + (d === 0 ? ' key' : '') + '" style="top:' + y.toFixed(1) + 'px">' +
+            (d > 0 ? "+" : "") + d + "°</span>";
+    }
+    rx.innerHTML = hx; ry.innerHTML = hy;
+  }
+  function readout(){
+    rYaw.textContent = wrapDeg(VIEW.yaw).toFixed(1) + "°";
+    rPitch.textContent = (VIEW.pitch >= 0 ? "+" : "") + VIEW.pitch.toFixed(1) + "°";
+    rFov.textContent = Math.round(VIEW.fov) + "°";
+  }
+  function paint(){ VIEW.draw && VIEW.draw(); ticks(); readout(); }
+
+  function loop(ts){
+    const dt = Math.min((ts - last) / 1000 || 0, .05); last = ts;
+    if (aim){
+      const d = wrapDeg(aim - VIEW.yaw);
+      if (Math.abs(d) < .15) { VIEW.yaw = aim; aim = null; }
+      else VIEW.yaw += d * Math.min(1, dt * 4.5);
+      paint();
+    } else if (idle && !reduced){
+      VIEW.yaw = wrapDeg(VIEW.yaw + dt * 2.2);
+      paint();
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  let drag = null;
+  el.addEventListener("pointerdown", e => {
+    drag = {x:e.clientX, y:e.clientY};
+    idle = false; aim = null;
+    el.classList.add("dragging", "touched");
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener("pointermove", e => {
+    if (!drag) return;
+    const t = VIEW.tan ? VIEW.tan() : {w:el.clientWidth, h:el.clientHeight};
+    const perPx = VIEW.fov / Math.max(t.w, 1);
+    VIEW.yaw = wrapDeg(VIEW.yaw - (e.clientX - drag.x) * perPx);
+    VIEW.pitch = Math.max(-85, Math.min(85, VIEW.pitch + (e.clientY - drag.y) * perPx));
+    drag = {x:e.clientX, y:e.clientY};
+    paint();
+  });
+  const stop = () => { drag = null; el.classList.remove("dragging"); };
+  el.addEventListener("pointerup", stop);
+  el.addEventListener("pointercancel", stop);
+  el.addEventListener("wheel", e => {
+    e.preventDefault();
+    idle = false; el.classList.add("touched");
+    VIEW.fov = Math.max(28, Math.min(104, VIEW.fov + Math.sign(e.deltaY) * 3));
+    paint();
+  }, {passive:false});
+  el.addEventListener("keydown", e => {
+    const step = e.shiftKey ? 12 : 4;
+    const k = e.key;
+    if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","+","-","=","_"].indexOf(k) < 0) return;
+    e.preventDefault(); idle = false; aim = null; el.classList.add("touched");
+    if (k === "ArrowLeft") VIEW.yaw = wrapDeg(VIEW.yaw - step);
+    if (k === "ArrowRight") VIEW.yaw = wrapDeg(VIEW.yaw + step);
+    if (k === "ArrowUp") VIEW.pitch = Math.min(85, VIEW.pitch + step);
+    if (k === "ArrowDown") VIEW.pitch = Math.max(-85, VIEW.pitch - step);
+    if (k === "+" || k === "=") VIEW.fov = Math.max(28, VIEW.fov - step);
+    if (k === "-" || k === "_") VIEW.fov = Math.min(104, VIEW.fov + step);
+    paint();
+  });
+  addEventListener("resize", () => { VIEW.resize && VIEW.resize(); paint(); });
+  new ResizeObserver(() => { VIEW.resize && VIEW.resize(); paint(); }).observe(el);
+  window.__aimViewer = deg => { aim = wrapDeg(deg); idle = false; el.classList.add("touched"); };
+  paint();
+})();
+
+/* ------------------------------------------------------------- filmstrip */
+(() => {
+  const strip = document.getElementById("strip");
+  const oIdx = document.getElementById("s-idx"), oYaw = document.getElementById("s-yaw"), oPitch = document.getElementById("s-pitch");
+  const frames = [...strip.querySelectorAll(".frame")];
+  const show = btn => {
+    frames.forEach(f => f.setAttribute("aria-current", String(f === btn)));
+    oIdx.textContent = btn.dataset.i + " / 309";
+    oYaw.textContent = (+btn.dataset.yaw).toFixed(1) + "°";
+    oPitch.textContent = (+btn.dataset.pitch >= 0 ? "+" : "") + (+btn.dataset.pitch).toFixed(1) + "°";
+  };
+  frames.forEach(btn => {
+    btn.addEventListener("mouseenter", () => show(btn));
+    btn.addEventListener("focus", () => show(btn));
+    btn.addEventListener("click", () => {
+      show(btn);
+      window.__aimViewer && window.__aimViewer(+btn.dataset.yaw);
+      document.getElementById("viewer").scrollIntoView({block:"center", behavior:"smooth"});
+    });
+  });
+  if (frames.length) show(frames[Math.floor(frames.length / 2)]);
+})();
+
+/* ------------------------------------------------------------ comparators */
+document.querySelectorAll(".cmp").forEach(cmp => {
+  const r = cmp.querySelector("input[type=range]");
+  const set = () => cmp.style.setProperty("--pos", r.value + "%");
+  r.addEventListener("input", set); set();
+});
+
+/* --------------------------------------------------------------- stepper */
+(() => {
+  const tabs = [...document.querySelectorAll(".step-btn")];
+  const pick = i => tabs.forEach((t, k) => {
+    const on = k === i;
+    t.setAttribute("aria-selected", String(on));
+    t.tabIndex = on ? 0 : -1;
+    document.getElementById(t.getAttribute("aria-controls")).dataset.active = String(on);
+  });
+  tabs.forEach((t, i) => {
+    t.addEventListener("click", () => pick(i));
+    t.addEventListener("keydown", e => {
+      const d = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : (e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0);
+      if (!d) return;
+      e.preventDefault();
+      const n = (i + d + tabs.length) % tabs.length;
+      pick(n); tabs[n].focus();
+    });
+  });
+  pick(0);
+})();
+</script>
+
+</body>
+</html>
