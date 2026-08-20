@@ -256,7 +256,7 @@ td.n{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-variant-numer
     </div>
     <div class="hero-meta">
       <div><b>309</b><span>frames in</span></div>
-      <div><b>333°</b><span>recovered sweep</span></div>
+      <div><b>318°</b><span>sweep placed</span></div>
       <div><b>4096×2048</b><span>equirect out</span></div>
       <div><b>921</b><span>inliers / pair</span></div>
     </div>
@@ -336,8 +336,8 @@ td.n{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-variant-numer
             <div class="facts">
               <div><span>model</span><span>H = K·R·K⁻¹</span></div>
               <div><span>one frame</span><span>4.0% of sphere</span></div>
-              <div><span>shown here</span><span>26 frames, 14.2%</span></div>
-              <div><span>full run</span><span>36.9% of sphere</span></div>
+              <div><span>shown here</span><span>26 frames, 13.7%</span></div>
+              <div><span>full run</span><span>36.6% of sphere</span></div>
             </div>
           </div>
         </div>
@@ -349,7 +349,7 @@ td.n{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-variant-numer
             phone-height sweep never saw get filled from their surroundings. That's the image in the viewer above.</p></div>
             <div class="facts">
               <div><span>output</span><span>4096×2048 jpg</span></div>
-              <div><span>coverage</span><span>36.9% imaged</span></div>
+              <div><span>coverage</span><span>36.6% imaged</span></div>
               <div><span>recovered pairs</span><span>15 interpolated</span></div>
               <div><span>blend</span><span>configurable</span></div>
             </div>
@@ -423,22 +423,24 @@ td.n{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-variant-numer
           <table>
             <thead><tr><th>Angle</th><th>Raw wobble</th><th>Smoothed</th><th></th></tr></thead>
             <tbody>
-              <tr><td>Pitch</td><td class="n">0.085°</td><td class="n">0.006°</td><td class="n">13.5× quieter</td></tr>
-              <tr><td>Roll</td><td class="n">0.123°</td><td class="n">0.024°</td><td class="n">5.2× quieter</td></tr>
-              <tr><td>Yaw</td><td class="n">0.209°</td><td class="n">0.278°</td><td class="n">left alone</td></tr>
+              <tr><td>Pitch</td><td class="n">0.084°</td><td class="n">0.005°</td><td class="n">16.1× quieter</td></tr>
+              <tr><td>Roll</td><td class="n">0.121°</td><td class="n">0.008°</td><td class="n">15.5× quieter</td></tr>
+              <tr><td>Yaw</td><td class="n">0.208°</td><td class="n">0.019°</td><td class="n">left alone</td></tr>
             </tbody>
           </table>
         </div>
         <p class="eyebrow" style="margin-top:4px">Wobble = std. dev. of the second difference, sweep removed</p>
       </div>
       <div class="card flagged">
-        <h3>And what it costs</h3>
-        <p>Averaging isn't free. Failed pairs — 15 of them here — get filled from their neighbours before the
-        window ever runs, so a bad estimate spreads a little before it's damped. And at the ends of the sequence the
-        window has nothing to average against: on this clip the last frames get dragged back and the final one snaps
-        forward by <b>5.4°</b>, against a largest honest step of 1.9°.</p>
-        <p>Fixes worth making: reflect the sequence at the edges instead of clamping the window, and taper the endpoints
-        instead of exempting them.</p>
+        <h3>Where drift shows up instead</h3>
+        <p>Smoothing quietens the wobble but cannot remove the error that accumulates along the chain. Over
+        308 pairs this run over-measures the sweep as <b>332°</b> of yaw. With a
+        40.2° field of view that is enough to close the circle, so the final frames would land on the same arc as
+        the first one — and they show a different wall entirely, matching frame 0 with 6 inliers out of 3,000
+        keypoints.</p>
+        <p>The pipeline now checks: it measures the real span, tries to match the tail against the head, and when
+        nothing matches it squeezes the sweep to <b>318°</b> so the two ends stop short of touching. The
+        correction is spread along the sequence rather than dumped at the join.</p>
       </div>
     </div>
   </div>
@@ -459,63 +461,63 @@ td.n{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-variant-numer
         <span class="lbl">pitch</span><span class="val" id="s-pitch">—</span>
         <span class="lbl" style="margin-left:auto">click to aim the viewer</span>
       </div>
-      <div class="strip" id="strip"><button class="frame" data-i="0" data-yaw="0.00" data-pitch="-0.00" aria-label="Frame 0, yaw 0 degrees"><img src="assets/strip/f00.jpg" alt="" loading="lazy" width="64"><b>0°</b></button>
-<button class="frame" data-i="7" data-yaw="-0.22" data-pitch="-0.01" aria-label="Frame 7, yaw -0 degrees"><img src="assets/strip/f01.jpg" alt="" loading="lazy" width="64"><b>0°</b></button>
-<button class="frame" data-i="14" data-yaw="-0.91" data-pitch="-0.03" aria-label="Frame 14, yaw -1 degrees"><img src="assets/strip/f02.jpg" alt="" loading="lazy" width="64"><b>-1°</b></button>
-<button class="frame" data-i="21" data-yaw="-2.58" data-pitch="-0.07" aria-label="Frame 21, yaw -3 degrees"><img src="assets/strip/f03.jpg" alt="" loading="lazy" width="64"><b>-3°</b></button>
-<button class="frame" data-i="29" data-yaw="-6.49" data-pitch="-0.17" aria-label="Frame 29, yaw -6 degrees"><img src="assets/strip/f04.jpg" alt="" loading="lazy" width="64"><b>-6°</b></button>
-<button class="frame" data-i="36" data-yaw="-11.67" data-pitch="-0.37" aria-label="Frame 36, yaw -12 degrees"><img src="assets/strip/f05.jpg" alt="" loading="lazy" width="64"><b>-12°</b></button>
-<button class="frame" data-i="43" data-yaw="-17.83" data-pitch="-0.64" aria-label="Frame 43, yaw -18 degrees"><img src="assets/strip/f06.jpg" alt="" loading="lazy" width="64"><b>-18°</b></button>
-<button class="frame" data-i="50" data-yaw="-24.57" data-pitch="-0.93" aria-label="Frame 50, yaw -25 degrees"><img src="assets/strip/f07.jpg" alt="" loading="lazy" width="64"><b>-25°</b></button>
-<button class="frame" data-i="57" data-yaw="-31.19" data-pitch="-1.15" aria-label="Frame 57, yaw -31 degrees"><img src="assets/strip/f08.jpg" alt="" loading="lazy" width="64"><b>-31°</b></button>
-<button class="frame" data-i="64" data-yaw="-37.51" data-pitch="-1.41" aria-label="Frame 64, yaw -38 degrees"><img src="assets/strip/f09.jpg" alt="" loading="lazy" width="64"><b>-38°</b></button>
-<button class="frame" data-i="72" data-yaw="-44.92" data-pitch="-1.80" aria-label="Frame 72, yaw -45 degrees"><img src="assets/strip/f10.jpg" alt="" loading="lazy" width="64"><b>-45°</b></button>
-<button class="frame" data-i="79" data-yaw="-52.02" data-pitch="-2.39" aria-label="Frame 79, yaw -52 degrees"><img src="assets/strip/f11.jpg" alt="" loading="lazy" width="64"><b>-52°</b></button>
-<button class="frame" data-i="86" data-yaw="-59.36" data-pitch="-2.96" aria-label="Frame 86, yaw -59 degrees"><img src="assets/strip/f12.jpg" alt="" loading="lazy" width="64"><b>-59°</b></button>
-<button class="frame" data-i="93" data-yaw="-67.02" data-pitch="-3.53" aria-label="Frame 93, yaw -67 degrees"><img src="assets/strip/f13.jpg" alt="" loading="lazy" width="64"><b>-67°</b></button>
-<button class="frame" data-i="100" data-yaw="-74.97" data-pitch="-4.09" aria-label="Frame 100, yaw -75 degrees"><img src="assets/strip/f14.jpg" alt="" loading="lazy" width="64"><b>-75°</b></button>
-<button class="frame" data-i="107" data-yaw="-82.93" data-pitch="-4.61" aria-label="Frame 107, yaw -83 degrees"><img src="assets/strip/f15.jpg" alt="" loading="lazy" width="64"><b>-83°</b></button>
-<button class="frame" data-i="115" data-yaw="-91.68" data-pitch="-4.89" aria-label="Frame 115, yaw -92 degrees"><img src="assets/strip/f16.jpg" alt="" loading="lazy" width="64"><b>-92°</b></button>
-<button class="frame" data-i="122" data-yaw="-99.03" data-pitch="-5.09" aria-label="Frame 122, yaw -99 degrees"><img src="assets/strip/f17.jpg" alt="" loading="lazy" width="64"><b>-99°</b></button>
-<button class="frame" data-i="129" data-yaw="-106.30" data-pitch="-5.27" aria-label="Frame 129, yaw -106 degrees"><img src="assets/strip/f18.jpg" alt="" loading="lazy" width="64"><b>-106°</b></button>
-<button class="frame" data-i="136" data-yaw="-114.11" data-pitch="-5.47" aria-label="Frame 136, yaw -114 degrees"><img src="assets/strip/f19.jpg" alt="" loading="lazy" width="64"><b>-114°</b></button>
-<button class="frame" data-i="143" data-yaw="-121.75" data-pitch="-5.68" aria-label="Frame 143, yaw -122 degrees"><img src="assets/strip/f20.jpg" alt="" loading="lazy" width="64"><b>-122°</b></button>
-<button class="frame" data-i="150" data-yaw="-129.35" data-pitch="-5.79" aria-label="Frame 150, yaw -129 degrees"><img src="assets/strip/f21.jpg" alt="" loading="lazy" width="64"><b>-129°</b></button>
-<button class="frame" data-i="158" data-yaw="-138.27" data-pitch="-5.92" aria-label="Frame 158, yaw -138 degrees"><img src="assets/strip/f22.jpg" alt="" loading="lazy" width="64"><b>-138°</b></button>
-<button class="frame" data-i="165" data-yaw="-146.44" data-pitch="-6.21" aria-label="Frame 165, yaw -146 degrees"><img src="assets/strip/f23.jpg" alt="" loading="lazy" width="64"><b>-146°</b></button>
-<button class="frame" data-i="172" data-yaw="-155.58" data-pitch="-6.33" aria-label="Frame 172, yaw -156 degrees"><img src="assets/strip/f24.jpg" alt="" loading="lazy" width="64"><b>-156°</b></button>
-<button class="frame" data-i="179" data-yaw="-165.41" data-pitch="-6.26" aria-label="Frame 179, yaw -165 degrees"><img src="assets/strip/f25.jpg" alt="" loading="lazy" width="64"><b>-165°</b></button>
-<button class="frame" data-i="186" data-yaw="-175.76" data-pitch="-6.04" aria-label="Frame 186, yaw -176 degrees"><img src="assets/strip/f26.jpg" alt="" loading="lazy" width="64"><b>-176°</b></button>
-<button class="frame" data-i="193" data-yaw="173.71" data-pitch="-5.72" aria-label="Frame 193, yaw 174 degrees"><img src="assets/strip/f27.jpg" alt="" loading="lazy" width="64"><b>+174°</b></button>
-<button class="frame" data-i="201" data-yaw="161.95" data-pitch="-5.12" aria-label="Frame 201, yaw 162 degrees"><img src="assets/strip/f28.jpg" alt="" loading="lazy" width="64"><b>+162°</b></button>
-<button class="frame" data-i="208" data-yaw="152.23" data-pitch="-4.45" aria-label="Frame 208, yaw 152 degrees"><img src="assets/strip/f29.jpg" alt="" loading="lazy" width="64"><b>+152°</b></button>
-<button class="frame" data-i="215" data-yaw="142.83" data-pitch="-3.87" aria-label="Frame 215, yaw 143 degrees"><img src="assets/strip/f30.jpg" alt="" loading="lazy" width="64"><b>+143°</b></button>
-<button class="frame" data-i="222" data-yaw="133.79" data-pitch="-3.38" aria-label="Frame 222, yaw 134 degrees"><img src="assets/strip/f31.jpg" alt="" loading="lazy" width="64"><b>+134°</b></button>
-<button class="frame" data-i="229" data-yaw="125.05" data-pitch="-2.88" aria-label="Frame 229, yaw 125 degrees"><img src="assets/strip/f32.jpg" alt="" loading="lazy" width="64"><b>+125°</b></button>
-<button class="frame" data-i="236" data-yaw="116.61" data-pitch="-2.31" aria-label="Frame 236, yaw 117 degrees"><img src="assets/strip/f33.jpg" alt="" loading="lazy" width="64"><b>+117°</b></button>
-<button class="frame" data-i="244" data-yaw="107.15" data-pitch="-1.62" aria-label="Frame 244, yaw 107 degrees"><img src="assets/strip/f34.jpg" alt="" loading="lazy" width="64"><b>+107°</b></button>
-<button class="frame" data-i="251" data-yaw="98.66" data-pitch="-0.98" aria-label="Frame 251, yaw 99 degrees"><img src="assets/strip/f35.jpg" alt="" loading="lazy" width="64"><b>+99°</b></button>
-<button class="frame" data-i="258" data-yaw="89.92" data-pitch="-0.43" aria-label="Frame 258, yaw 90 degrees"><img src="assets/strip/f36.jpg" alt="" loading="lazy" width="64"><b>+90°</b></button>
-<button class="frame" data-i="265" data-yaw="80.40" data-pitch="-0.02" aria-label="Frame 265, yaw 80 degrees"><img src="assets/strip/f37.jpg" alt="" loading="lazy" width="64"><b>+80°</b></button>
-<button class="frame" data-i="272" data-yaw="70.57" data-pitch="0.25" aria-label="Frame 272, yaw 71 degrees"><img src="assets/strip/f38.jpg" alt="" loading="lazy" width="64"><b>+71°</b></button>
-<button class="frame" data-i="279" data-yaw="61.22" data-pitch="0.42" aria-label="Frame 279, yaw 61 degrees"><img src="assets/strip/f39.jpg" alt="" loading="lazy" width="64"><b>+61°</b></button>
-<button class="frame" data-i="287" data-yaw="52.34" data-pitch="0.71" aria-label="Frame 287, yaw 52 degrees"><img src="assets/strip/f40.jpg" alt="" loading="lazy" width="64"><b>+52°</b></button>
-<button class="frame" data-i="294" data-yaw="44.61" data-pitch="0.88" aria-label="Frame 294, yaw 45 degrees"><img src="assets/strip/f41.jpg" alt="" loading="lazy" width="64"><b>+45°</b></button>
-<button class="frame" data-i="301" data-yaw="36.65" data-pitch="0.89" aria-label="Frame 301, yaw 37 degrees"><img src="assets/strip/f42.jpg" alt="" loading="lazy" width="64"><b>+37°</b></button>
-<button class="frame" data-i="308" data-yaw="27.47" data-pitch="0.76" aria-label="Frame 308, yaw 27 degrees"><img src="assets/strip/f43.jpg" alt="" loading="lazy" width="64"><b>+27°</b></button></div>
+      <div class="strip" id="strip"><button class="frame" data-i="0" data-yaw="0.00" data-pitch="0.00" aria-label="Frame 0, yaw 0 degrees"><img src="assets/strip/f00.jpg" alt="" loading="lazy" width="64"><b>0°</b></button>
+<button class="frame" data-i="7" data-yaw="-0.20" data-pitch="-0.01" aria-label="Frame 7, yaw -0 degrees"><img src="assets/strip/f01.jpg" alt="" loading="lazy" width="64"><b>0°</b></button>
+<button class="frame" data-i="14" data-yaw="-0.87" data-pitch="-0.03" aria-label="Frame 14, yaw -1 degrees"><img src="assets/strip/f02.jpg" alt="" loading="lazy" width="64"><b>-1°</b></button>
+<button class="frame" data-i="21" data-yaw="-2.47" data-pitch="-0.07" aria-label="Frame 21, yaw -2 degrees"><img src="assets/strip/f03.jpg" alt="" loading="lazy" width="64"><b>-2°</b></button>
+<button class="frame" data-i="29" data-yaw="-6.21" data-pitch="-0.17" aria-label="Frame 29, yaw -6 degrees"><img src="assets/strip/f04.jpg" alt="" loading="lazy" width="64"><b>-6°</b></button>
+<button class="frame" data-i="36" data-yaw="-11.17" data-pitch="-0.37" aria-label="Frame 36, yaw -11 degrees"><img src="assets/strip/f05.jpg" alt="" loading="lazy" width="64"><b>-11°</b></button>
+<button class="frame" data-i="43" data-yaw="-17.06" data-pitch="-0.64" aria-label="Frame 43, yaw -17 degrees"><img src="assets/strip/f06.jpg" alt="" loading="lazy" width="64"><b>-17°</b></button>
+<button class="frame" data-i="50" data-yaw="-23.51" data-pitch="-0.93" aria-label="Frame 50, yaw -24 degrees"><img src="assets/strip/f07.jpg" alt="" loading="lazy" width="64"><b>-24°</b></button>
+<button class="frame" data-i="57" data-yaw="-29.84" data-pitch="-1.15" aria-label="Frame 57, yaw -30 degrees"><img src="assets/strip/f08.jpg" alt="" loading="lazy" width="64"><b>-30°</b></button>
+<button class="frame" data-i="64" data-yaw="-35.89" data-pitch="-1.41" aria-label="Frame 64, yaw -36 degrees"><img src="assets/strip/f09.jpg" alt="" loading="lazy" width="64"><b>-36°</b></button>
+<button class="frame" data-i="72" data-yaw="-42.98" data-pitch="-1.80" aria-label="Frame 72, yaw -43 degrees"><img src="assets/strip/f10.jpg" alt="" loading="lazy" width="64"><b>-43°</b></button>
+<button class="frame" data-i="79" data-yaw="-49.75" data-pitch="-2.41" aria-label="Frame 79, yaw -50 degrees"><img src="assets/strip/f11.jpg" alt="" loading="lazy" width="64"><b>-50°</b></button>
+<button class="frame" data-i="86" data-yaw="-56.74" data-pitch="-3.01" aria-label="Frame 86, yaw -57 degrees"><img src="assets/strip/f12.jpg" alt="" loading="lazy" width="64"><b>-57°</b></button>
+<button class="frame" data-i="93" data-yaw="-64.04" data-pitch="-3.61" aria-label="Frame 93, yaw -64 degrees"><img src="assets/strip/f13.jpg" alt="" loading="lazy" width="64"><b>-64°</b></button>
+<button class="frame" data-i="100" data-yaw="-71.65" data-pitch="-4.17" aria-label="Frame 100, yaw -72 degrees"><img src="assets/strip/f14.jpg" alt="" loading="lazy" width="64"><b>-72°</b></button>
+<button class="frame" data-i="107" data-yaw="-79.27" data-pitch="-4.69" aria-label="Frame 107, yaw -79 degrees"><img src="assets/strip/f15.jpg" alt="" loading="lazy" width="64"><b>-79°</b></button>
+<button class="frame" data-i="115" data-yaw="-87.65" data-pitch="-4.97" aria-label="Frame 115, yaw -88 degrees"><img src="assets/strip/f16.jpg" alt="" loading="lazy" width="64"><b>-88°</b></button>
+<button class="frame" data-i="122" data-yaw="-94.70" data-pitch="-5.17" aria-label="Frame 122, yaw -95 degrees"><img src="assets/strip/f17.jpg" alt="" loading="lazy" width="64"><b>-95°</b></button>
+<button class="frame" data-i="129" data-yaw="-101.66" data-pitch="-5.34" aria-label="Frame 129, yaw -102 degrees"><img src="assets/strip/f18.jpg" alt="" loading="lazy" width="64"><b>-102°</b></button>
+<button class="frame" data-i="136" data-yaw="-109.12" data-pitch="-5.52" aria-label="Frame 136, yaw -109 degrees"><img src="assets/strip/f19.jpg" alt="" loading="lazy" width="64"><b>-109°</b></button>
+<button class="frame" data-i="143" data-yaw="-116.42" data-pitch="-5.71" aria-label="Frame 143, yaw -116 degrees"><img src="assets/strip/f20.jpg" alt="" loading="lazy" width="64"><b>-116°</b></button>
+<button class="frame" data-i="150" data-yaw="-123.69" data-pitch="-5.82" aria-label="Frame 150, yaw -124 degrees"><img src="assets/strip/f21.jpg" alt="" loading="lazy" width="64"><b>-124°</b></button>
+<button class="frame" data-i="158" data-yaw="-132.22" data-pitch="-5.95" aria-label="Frame 158, yaw -132 degrees"><img src="assets/strip/f22.jpg" alt="" loading="lazy" width="64"><b>-132°</b></button>
+<button class="frame" data-i="165" data-yaw="-140.04" data-pitch="-6.24" aria-label="Frame 165, yaw -140 degrees"><img src="assets/strip/f23.jpg" alt="" loading="lazy" width="64"><b>-140°</b></button>
+<button class="frame" data-i="172" data-yaw="-148.79" data-pitch="-6.37" aria-label="Frame 172, yaw -149 degrees"><img src="assets/strip/f24.jpg" alt="" loading="lazy" width="64"><b>-149°</b></button>
+<button class="frame" data-i="179" data-yaw="-158.20" data-pitch="-6.30" aria-label="Frame 179, yaw -158 degrees"><img src="assets/strip/f25.jpg" alt="" loading="lazy" width="64"><b>-158°</b></button>
+<button class="frame" data-i="186" data-yaw="-168.07" data-pitch="-6.09" aria-label="Frame 186, yaw -168 degrees"><img src="assets/strip/f26.jpg" alt="" loading="lazy" width="64"><b>-168°</b></button>
+<button class="frame" data-i="193" data-yaw="-178.07" data-pitch="-5.77" aria-label="Frame 193, yaw -178 degrees"><img src="assets/strip/f27.jpg" alt="" loading="lazy" width="64"><b>-178°</b></button>
+<button class="frame" data-i="201" data-yaw="170.75" data-pitch="-5.18" aria-label="Frame 201, yaw 171 degrees"><img src="assets/strip/f28.jpg" alt="" loading="lazy" width="64"><b>+171°</b></button>
+<button class="frame" data-i="208" data-yaw="161.44" data-pitch="-4.52" aria-label="Frame 208, yaw 161 degrees"><img src="assets/strip/f29.jpg" alt="" loading="lazy" width="64"><b>+161°</b></button>
+<button class="frame" data-i="215" data-yaw="152.45" data-pitch="-3.94" aria-label="Frame 215, yaw 152 degrees"><img src="assets/strip/f30.jpg" alt="" loading="lazy" width="64"><b>+152°</b></button>
+<button class="frame" data-i="222" data-yaw="143.81" data-pitch="-3.45" aria-label="Frame 222, yaw 144 degrees"><img src="assets/strip/f31.jpg" alt="" loading="lazy" width="64"><b>+144°</b></button>
+<button class="frame" data-i="229" data-yaw="135.44" data-pitch="-2.95" aria-label="Frame 229, yaw 135 degrees"><img src="assets/strip/f32.jpg" alt="" loading="lazy" width="64"><b>+135°</b></button>
+<button class="frame" data-i="236" data-yaw="127.36" data-pitch="-2.38" aria-label="Frame 236, yaw 127 degrees"><img src="assets/strip/f33.jpg" alt="" loading="lazy" width="64"><b>+127°</b></button>
+<button class="frame" data-i="244" data-yaw="118.31" data-pitch="-1.69" aria-label="Frame 244, yaw 118 degrees"><img src="assets/strip/f34.jpg" alt="" loading="lazy" width="64"><b>+118°</b></button>
+<button class="frame" data-i="251" data-yaw="110.19" data-pitch="-1.05" aria-label="Frame 251, yaw 110 degrees"><img src="assets/strip/f35.jpg" alt="" loading="lazy" width="64"><b>+110°</b></button>
+<button class="frame" data-i="258" data-yaw="101.83" data-pitch="-0.49" aria-label="Frame 258, yaw 102 degrees"><img src="assets/strip/f36.jpg" alt="" loading="lazy" width="64"><b>+102°</b></button>
+<button class="frame" data-i="265" data-yaw="92.73" data-pitch="-0.08" aria-label="Frame 265, yaw 93 degrees"><img src="assets/strip/f37.jpg" alt="" loading="lazy" width="64"><b>+93°</b></button>
+<button class="frame" data-i="272" data-yaw="83.39" data-pitch="0.21" aria-label="Frame 272, yaw 83 degrees"><img src="assets/strip/f38.jpg" alt="" loading="lazy" width="64"><b>+83°</b></button>
+<button class="frame" data-i="279" data-yaw="74.49" data-pitch="0.41" aria-label="Frame 279, yaw 74 degrees"><img src="assets/strip/f39.jpg" alt="" loading="lazy" width="64"><b>+74°</b></button>
+<button class="frame" data-i="287" data-yaw="66.01" data-pitch="0.72" aria-label="Frame 287, yaw 66 degrees"><img src="assets/strip/f40.jpg" alt="" loading="lazy" width="64"><b>+66°</b></button>
+<button class="frame" data-i="294" data-yaw="58.62" data-pitch="0.89" aria-label="Frame 294, yaw 59 degrees"><img src="assets/strip/f41.jpg" alt="" loading="lazy" width="64"><b>+59°</b></button>
+<button class="frame" data-i="301" data-yaw="50.41" data-pitch="0.90" aria-label="Frame 301, yaw 50 degrees"><img src="assets/strip/f42.jpg" alt="" loading="lazy" width="64"><b>+50°</b></button>
+<button class="frame" data-i="308" data-yaw="42.22" data-pitch="0.79" aria-label="Frame 308, yaw 42 degrees"><img src="assets/strip/f43.jpg" alt="" loading="lazy" width="64"><b>+42°</b></button></div>
     </div>
     <div class="two" style="margin-top:34px">
       <div class="card">
         <h3>Handheld, and it shows</h3>
         <p>The sweep starts almost stationary — 0.03° per frame for the first dozen — then settles to a steady
-        1.08° per frame and finishes mid-motion at about 1.2°. Pitch wanders over 7.2° across the sweep because
+        1.08° per frame and finishes mid-motion at about 1.2°. Pitch wanders over 7.3° across the sweep because
         an arm is not a tripod; that wander is exactly what the rotation chain has to absorb.</p>
       </div>
       <div class="card">
         <h3>When matching fails</h3>
         <p>15 of 308 pairs never reached the 200-inlier threshold — blank wall, blown
-        highlight, too fast a turn. Rather than dropping those frames, the pipeline borrows the rotation from a
-        neighbour, or averages the two around it, and carries on.</p>
+        highlight, too fast a turn. Rather than dropping those frames, the pipeline averages the rotations either side
+        of the gap, falling back to one neighbour only when the other is missing too.</p>
       </div>
     </div>
   </div>
