@@ -4,7 +4,7 @@ Turns a handheld phone sweep into an equirectangular 360° panorama. The geometr
 comes entirely from image features and a pure-rotation camera model — no gyroscope
 data, no tripod, no stitching app.
 
-**[Live demo](https://360-spherical-stitching.vercel.app)** · [Usage guide](USAGE.md) · [Method](TECHNICAL.md) · [Smoothing notes](TEMPORAL_SMOOTHING.md)
+**[Live demo](https://360.ramikronbi.com)** · [Usage guide](USAGE.md) · [Method](TECHNICAL.md) · [Smoothing notes](TEMPORAL_SMOOTHING.md)
 
 ![Equirectangular panorama of a living room, stitched from 309 phone frames](showcase/panorama.jpg)
 
@@ -119,7 +119,7 @@ at full 1080×1920 resolution on a Ryzen 7 5800H:
 
 The demo site walks through the same run stage by stage, including a real ORB match
 visualization and a wipe comparison of smoothing on versus off:
-**[360-spherical-stitching.vercel.app](https://360-spherical-stitching.vercel.app)**
+**[360.ramikronbi.com](https://360.ramikronbi.com)**
 
 ## Assumptions and limits
 
