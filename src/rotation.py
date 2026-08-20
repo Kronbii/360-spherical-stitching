@@ -305,6 +305,58 @@ def chain_rotations(relative_rotations: List[np.ndarray], apply_smoothing: bool 
     return global_rotations
 
 
+def yaw_degrees(R: np.ndarray) -> float:
+    """
+    Yaw (azimuth) of a global rotation, in degrees, wrapped to [-180, +180].
+
+    This is the direction the camera faces around the vertical axis, taken from the
+    rotated optical axis: R @ [0, 0, 1].
+
+    Args:
+        R: 3x3 global rotation matrix (camera to world).
+
+    Returns:
+        Yaw angle in degrees.
+    """
+    return float(np.degrees(np.arctan2(R[0, 2], R[2, 2])))
+
+
+def unwrapped_yaw_degrees(global_rotations: List[np.ndarray]) -> np.ndarray:
+    """
+    Yaw of every frame, unwrapped so a sweep past ±180° keeps counting.
+
+    Needed because rotation_angle_degrees() saturates at 180° and cannot express how
+    far a panorama sweep has actually travelled.
+
+    Args:
+        global_rotations: List of global rotation matrices.
+
+    Returns:
+        Array of unwrapped yaw angles in degrees, starting from the first frame's yaw.
+    """
+    if not global_rotations:
+        return np.zeros(0)
+    yaws = np.array([yaw_degrees(R) for R in global_rotations])
+    return np.degrees(np.unwrap(np.radians(yaws)))
+
+
+def sweep_span_degrees(global_rotations: List[np.ndarray]) -> float:
+    """
+    Total yaw travelled from the first frame to the last, in degrees.
+
+    Unlike rotation_angle_degrees(global_rotations[-1] @ global_rotations[0].T), this
+    does not saturate: a 332° sweep reports 332°, and a 400° sweep reports 400°.
+
+    Args:
+        global_rotations: List of global rotation matrices.
+
+    Returns:
+        Absolute yaw span in degrees.
+    """
+    y = unwrapped_yaw_degrees(global_rotations)
+    return float(abs(y[-1] - y[0])) if len(y) > 1 else 0.0
+
+
 def rotation_angle_degrees(R: np.ndarray) -> float:
     """
     Compute rotation angle in degrees from rotation matrix.

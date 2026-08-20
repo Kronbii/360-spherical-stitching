@@ -53,6 +53,8 @@ from .rotation import (
 )
 from .circular_match import (
     detect_circular_closure,
+    enforce_open_sweep,
+    head_tail_overlap,
     trim_excess_frames,
 )
 from .warp_sphere import (
@@ -436,8 +438,8 @@ def run_pipeline(config: PipelineConfig) -> Path:
     )
     
     global_rotations = chain_rotations(
-        relative_rotations, 
-        apply_smoothing=True,
+        relative_rotations,
+        apply_smoothing=config.matching.rotation_smoothing_window > 1,
         smoothing_window=config.matching.rotation_smoothing_window
     )
     log_rotation_summary(global_rotations, rotation_diags)
@@ -468,7 +470,23 @@ def run_pipeline(config: PipelineConfig) -> Path:
             )
             
             logger.info(f"Circular closure detected: trimmed to {len(image_infos)} frames")
-    
+
+    # ============================================================
+    # STEP 5c: Keep the sweep from wrapping onto itself
+    # ============================================================
+    # A chain that over-estimates can report enough yaw to close the circle even when the
+    # camera never came back round. The warp would then drop the last frames onto the same
+    # arc as the first ones and paint unrelated content over them. Trimming already handled
+    # the case where the frames genuinely do overlap; anything left is drift.
+    hfov_deg = 2.0 * np.degrees(np.arctan(calib.K[0, 2] / calib.K[0, 0]))
+    collision = head_tail_overlap(match_images, global_rotations, hfov_deg)
+    if trim_idx is None and collision is not None:
+        first, last = collision
+        logger.warning(f"Frames {first}-{last} would land on the first frame's arc")
+        global_rotations, wrap_report = enforce_open_sweep(global_rotations, hfov_deg)
+    elif collision is not None:
+        logger.info("Wrap overlap resolved by trimming at the closure point")
+
     # ============================================================
     # STEP 6: Load full-resolution images and warp
     # ============================================================

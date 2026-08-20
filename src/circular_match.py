@@ -11,7 +11,7 @@ import numpy as np
 
 from .config import MatchingConfig
 from .features import MatchResult, match_image_pair
-from .rotation import rotation_angle_degrees
+from .rotation import rotation_angle_degrees, sweep_span_degrees, unwrapped_yaw_degrees
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +62,14 @@ def detect_circular_closure(
     if len(global_rotations) < 2:
         return None
     
-    # Calculate total rotation angle (from first to last frame)
-    R_total = global_rotations[-1] @ global_rotations[0].T
-    total_rotation_deg = rotation_angle_degrees(R_total)
-    
+    # Total yaw travelled. This must use the unwrapped sweep span, not the geodesic
+    # angle between the first and last rotation: rotation_angle_degrees() is
+    # arccos((trace-1)/2), which saturates at 180°, so a 332° sweep measures as 28°
+    # and any threshold above 180° could never be reached.
+    total_rotation_deg = sweep_span_degrees(global_rotations)
+
     logger.debug(f"Total rotation coverage: {total_rotation_deg:.1f}°")
-    
+
     # Only check for closure if we've rotated more than minimum threshold
     if total_rotation_deg < min_closure_rotation:
         logger.debug(f"Rotation coverage ({total_rotation_deg:.1f}°) below threshold ({min_closure_rotation}°), no closure check")
@@ -75,32 +77,21 @@ def detect_circular_closure(
     
     logger.info(f"Checking for circular closure (total rotation: {total_rotation_deg:.1f}°)...")
     
-    # STEP 1: Find where 360° rotation is reached using rotation data
+    # STEP 1: Find where 360° of yaw is reached, again from the unwrapped sweep
+    yaw = unwrapped_yaw_degrees(global_rotations)
+    travelled = np.abs(yaw - yaw[0])
+
     estimated_360_idx = None
-    for i in range(1, len(global_rotations)):
-        # Calculate rotation from frame 0 to frame i
-        R_i = global_rotations[i] @ global_rotations[0].T
-        angle_i = rotation_angle_degrees(R_i)
-        
-        if angle_i >= 360.0:
-            estimated_360_idx = i
-            logger.debug(f"Rotation data suggests 360° reached at frame {estimated_360_idx} ({angle_i:.1f}°)")
-            break
-    
-    # If no exact 360° point found, find the closest one
-    if estimated_360_idx is None:
-        closest_to_360 = None
-        closest_diff = float('inf')
-        for i in range(1, len(global_rotations)):
-            R_i = global_rotations[i] @ global_rotations[0].T
-            angle_i = rotation_angle_degrees(R_i)
-            diff = abs(angle_i - 360.0)
-            if diff < closest_diff:
-                closest_diff = diff
-                closest_to_360 = i
-        if closest_to_360 is not None and closest_diff < 30.0:  # Within 30° of 360
-            estimated_360_idx = closest_to_360
-            logger.debug(f"Closest to 360° is frame {estimated_360_idx} ({rotation_angle_degrees(global_rotations[estimated_360_idx] @ global_rotations[0].T):.1f}°)")
+    past = np.where(travelled >= 360.0)[0]
+    if len(past):
+        estimated_360_idx = int(past[0])
+        logger.debug(f"Yaw reaches 360° at frame {estimated_360_idx} ({travelled[estimated_360_idx]:.1f}°)")
+    else:
+        # Not a full turn: fall back to the closest approach, if it is close at all
+        closest = int(np.argmin(np.abs(travelled - 360.0)))
+        if abs(travelled[closest] - 360.0) < 30.0:
+            estimated_360_idx = closest
+            logger.debug(f"Closest to 360° is frame {closest} ({travelled[closest]:.1f}°)")
     
     # STEP 2: Search around estimated 360° point with feature matching
     # Search window: frames from (estimated_360_idx - 10) to (estimated_360_idx + 10), or last N frames if no estimate
@@ -158,11 +149,15 @@ def detect_circular_closure(
                        f"(frame {best_match_idx} matches frame {best_match_early_idx} with {best_match_inliers} inliers)")
         return best_match_idx
     
-    # STEP 4: If no match found but we have rotation estimate, use it anyway (rotation data is reliable)
+    # STEP 4: Rotation data alone is not evidence of closure. It is exactly what drifts,
+    # and trimming on it would delete real frames because of an estimation error. Report
+    # no closure and let enforce_open_sweep() absorb the drift instead.
     if estimated_360_idx is not None:
-        logger.warning(f"No feature matches found, but rotation data indicates 360° at frame {estimated_360_idx}, using rotation-based estimate")
-        return estimated_360_idx
-    
+        logger.warning(
+            f"Rotation data suggests 360° near frame {estimated_360_idx}, but no frame there matches "
+            f"any early frame. Treating the sweep as open rather than trimming on drift alone."
+        )
+
     logger.debug("No circular closure detected")
     return None
 
@@ -202,3 +197,92 @@ def trim_excess_frames(
                f"(kept {len(trimmed_images)} frames, removed frames {trim_idx + 1} to {len(images) - 1})")
     
     return trimmed_images, trimmed_image_infos, trimmed_match_results, trimmed_global_rotations
+
+def enforce_open_sweep(
+    global_rotations: List[np.ndarray],
+    hfov_deg: float,
+    margin_deg: float = 2.0
+) -> Tuple[List[np.ndarray], Optional[dict]]:
+    """
+    Stop an over-reaching rotation chain from wrapping the last frames onto the first.
+
+    Every pair's rotation is estimated independently, so the chain accumulates error.
+    When it over-estimates, the sweep can be reported as long enough to close the circle
+    even though the camera never returned to its starting view. The warp stage then
+    places the final frames on the same arc as the first ones, and since their content is
+    unrelated, one paints over the other — a hard seam of two different scenes.
+
+    Call this only after a feature-level closure check has failed, i.e. the tail and head
+    provably do not see the same thing. The correction squeezes the whole sweep about the
+    vertical axis so the two ends stop just short of touching, spreading the accumulated
+    error evenly over the sequence instead of dumping it at the join.
+
+    Args:
+        global_rotations: Chained global rotations.
+        hfov_deg: Horizontal field of view of one frame, in degrees.
+        margin_deg: Extra gap to leave between the two ends.
+
+    Returns:
+        Tuple of (rotations, report). Report is None when no correction was needed,
+        otherwise a dict describing what was applied.
+    """
+    if len(global_rotations) < 3:
+        return global_rotations, None
+
+    span = sweep_span_degrees(global_rotations)
+    limit = 360.0 - hfov_deg - margin_deg
+
+    if span <= limit:
+        logger.debug(f"Sweep span {span:.1f}° fits within {limit:.1f}°, no wrap correction needed")
+        return global_rotations, None
+
+    scale = limit / span
+    yaw = unwrapped_yaw_degrees(global_rotations)
+    corrected = []
+    for R, y in zip(global_rotations, yaw - yaw[0]):
+        a = np.radians((scale - 1.0) * y)          # negative: pull each frame back
+        Ry = np.array([[np.cos(a), 0.0, np.sin(a)],
+                       [0.0,       1.0, 0.0      ],
+                       [-np.sin(a), 0.0, np.cos(a)]])
+        corrected.append(Ry @ R)                   # spin about world vertical only
+
+    report = {
+        "span_before": span,
+        "span_after": sweep_span_degrees(corrected),
+        "limit": limit,
+        "scale": scale,
+        "hfov_deg": hfov_deg,
+    }
+    logger.warning(
+        f"Sweep measured {span:.1f}° of yaw, which with a {hfov_deg:.1f}° field of view would "
+        f"wrap the last frames onto the first."
+    )
+    logger.warning(
+        f"No feature match confirms the loop closes, so the chain over-reached. Squeezing the "
+        f"sweep to {report['span_after']:.1f}° (x{scale:.4f}) to keep the ends apart."
+    )
+    return corrected, report
+
+
+def head_tail_overlap(
+    images: List,
+    global_rotations: List[np.ndarray],
+    hfov_deg: float
+) -> Optional[Tuple[int, int]]:
+    """
+    Frames whose placement collides with the first frame's arc, if any.
+
+    Args:
+        images: Frames, only used for its length.
+        global_rotations: Chained global rotations.
+        hfov_deg: Horizontal field of view of one frame, in degrees.
+
+    Returns:
+        (first colliding index, last index) or None when nothing collides.
+    """
+    yaw = unwrapped_yaw_degrees(global_rotations)
+    travelled = np.abs(yaw - yaw[0])
+    colliding = np.where(travelled > 360.0 - hfov_deg)[0]
+    if not len(colliding):
+        return None
+    return int(colliding[0]), len(global_rotations) - 1
