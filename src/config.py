@@ -16,7 +16,7 @@ class MatchingConfig:
     orb_nfeatures: int = 3000  # Number of ORB features to detect
     ratio_test_threshold: float = 0.75  # Lowe's ratio test threshold (lower = stricter, 0.75 = balanced)
     ransac_reproj_threshold: float = 3.0  # RANSAC reprojection threshold (scaled by image size)
-    min_inliers: int = 30  # Minimum number of inliers required (lower = more lenient)
+    min_inliers: int = 60  # Minimum number of inliers required (lower = more lenient)
     use_clahe: bool = False  # Use CLAHE for feature extraction
     disable_circular_closure: bool = False  # Disable circular closure detection (use if video doesn't loop)
     symmetric_matching: bool = False  # Use symmetric matching (cross-check) - can be too strict for some datasets
@@ -216,7 +216,7 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         min_inliers=matching_data.get('min_inliers', 60),
         use_clahe=matching_data.get('use_clahe', False),
         disable_circular_closure=matching_data.get('disable_circular_closure', False),
-        symmetric_matching=matching_data.get('symmetric_matching', True),
+        symmetric_matching=matching_data.get('symmetric_matching', False),
         ransac_refinement=matching_data.get('ransac_refinement', True),
         ransac_max_iters=matching_data.get('ransac_max_iters', 3000),
         rotation_smoothing_window=matching_data.get('rotation_smoothing_window', 3),
@@ -289,6 +289,7 @@ class CalibrationData:
     cx: float  # Principal point (x)
     cy: float  # Principal point (y)
     dist_coeffs: Optional[list] = None  # Distortion coefficients [k1, k2, p1, p2, k3]
+    source: str = "unspecified"  # Human-readable provenance for reports and diagnostics
     
     @property
     def K(self) -> "np.ndarray":  # type: ignore
@@ -299,3 +300,47 @@ class CalibrationData:
             [0, self.fy, self.cy],
             [0, 0, 1]
         ], dtype=np.float64)
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable calibration record."""
+        return {
+            "fx": self.fx,
+            "fy": self.fy,
+            "cx": self.cx,
+            "cy": self.cy,
+            "dist_coeffs": self.dist_coeffs,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_json(cls, path: Path) -> "CalibrationData":
+        """Load calibration data from a flat record or a saved intrinsics report."""
+        path = Path(path)
+        with path.open("r") as f:
+            data = json.load(f)
+
+        if not isinstance(data, dict):
+            raise ValueError(f"Calibration file must contain a JSON object: {path}")
+
+        # ``save_intrinsics_report`` wraps the values in an ``intrinsics`` object,
+        # while user-authored calibration files commonly use the flat form.
+        if "intrinsics" in data:
+            values = data["intrinsics"]
+            if not isinstance(values, dict):
+                raise ValueError(f"'intrinsics' must be a JSON object: {path}")
+            source = data.get("estimation_source", values.get("source"))
+        else:
+            values = data
+            source = values.get("source")
+
+        try:
+            return cls(
+                fx=float(values["fx"]),
+                fy=float(values["fy"]),
+                cx=float(values["cx"]),
+                cy=float(values["cy"]),
+                dist_coeffs=values.get("dist_coeffs"),
+                source=str(source) if source is not None else f"calibration JSON: {path}",
+            )
+        except KeyError as exc:
+            raise ValueError(f"Calibration file is missing required field {exc.args[0]!r}: {path}") from exc

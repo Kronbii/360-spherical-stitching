@@ -135,23 +135,14 @@ visualization and a wipe comparison of smoothing on versus off:
 - **No bundle adjustment and no exposure matching.** Error accumulates along the chain
   instead of being distributed around the loop, and frames keep their own exposure.
 
-## Known issues
-
-- The smoothing window clamps at the ends of the sequence and leaves the first and last
-  rotations untouched. On a clip that finishes mid-motion this drags the tail backwards
-  and snaps the final frame forward — 5.4° on the sample run, against a largest honest
-  step of 1.9°. Reflecting the sequence at the edges would fix it.
-- Part of the test suite is stale: several tests construct `CalibrationData(source=...)`,
-  a keyword the dataclass no longer takes.
-
 ## Tests
 
 ```bash
 python run_tests.py          # or: pytest -q
 ```
 
-186 tests across the config, IO, intrinsics, feature, rotation, blending, and warping
-modules.
+More than 200 tests cover config, IO, intrinsics, feature matching, rotation, blending,
+and warping.
 
 ## Repository layout
 

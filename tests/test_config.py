@@ -16,6 +16,7 @@ from src.config import (
     MatchingConfig,
     OutputConfig,
     PipelineConfig,
+    load_config_from_yaml,
 )
 
 
@@ -143,6 +144,33 @@ class TestCalibrationData:
         assert calib.fy == 1500.0
         assert calib.dist_coeffs == [0.1, -0.2, 0.0, 0.0, 0.05]
 
+    def test_json_round_trip_preserves_source(self, temp_dir, sample_calibration):
+        calib_path = temp_dir / "calib.json"
+        with open(calib_path, "w") as f:
+            json.dump(sample_calibration.to_dict(), f)
+
+        loaded = CalibrationData.from_json(calib_path)
+
+        assert loaded == sample_calibration
+
+    def test_from_saved_intrinsics_report(self, temp_dir):
+        calib_path = temp_dir / "intrinsics-report.json"
+        with open(calib_path, "w") as f:
+            json.dump({
+                "intrinsics": {
+                    "fx": 1500.0,
+                    "fy": 1500.0,
+                    "cx": 640.0,
+                    "cy": 480.0,
+                    "dist_coeffs": None,
+                },
+                "estimation_source": "HFOV fallback (65°)",
+            }, f)
+
+        loaded = CalibrationData.from_json(calib_path)
+
+        assert loaded.source == "HFOV fallback (65°)"
+
 
 class TestPipelineConfig:
     """Tests for PipelineConfig dataclass."""
@@ -183,3 +211,12 @@ class TestPipelineConfig:
         assert config.matching.min_inliers == 40
         assert config.blending.method == "feather"
 
+    def test_yaml_matching_defaults_match_dataclass(self, temp_dir):
+        config_path = temp_dir / "config.yaml"
+        config_path.write_text("input_dir: ./photos\noutput_dir: ./output\n")
+
+        loaded = load_config_from_yaml(config_path)
+        defaults = MatchingConfig()
+
+        assert loaded.matching.min_inliers == defaults.min_inliers
+        assert loaded.matching.symmetric_matching == defaults.symmetric_matching

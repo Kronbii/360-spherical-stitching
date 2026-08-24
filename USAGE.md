@@ -92,7 +92,7 @@ output:
 # Feature matching
 matching:
   match_width: 1600
-  min_inliers: 30
+  min_inliers: 60
   # ... more options
 
 # Camera intrinsics
@@ -154,7 +154,7 @@ matching:
   match_full_res: false          # If true, use full resolution (match_width ignored)
   orb_nfeatures: 3000            # Number of ORB features to detect
   ratio_test_threshold: 0.75     # Lowe's ratio test (lower = stricter, 0.7-0.8 recommended)
-  min_inliers: 30                # Minimum RANSAC inliers (lower = more lenient)
+  min_inliers: 60                # Minimum RANSAC inliers (lower = more lenient)
   symmetric_matching: false      # Cross-check matches (can be too strict)
   ransac_refinement: true        # Refine homography with all inliers (recommended)
   ransac_max_iters: 3000         # Max RANSAC iterations (higher = better, slower)
@@ -557,4 +557,3 @@ Panoramas can be viewed in:
 ---
 
 For technical details, see [TECHNICAL.md](TECHNICAL.md).
-

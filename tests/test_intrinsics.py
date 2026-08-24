@@ -257,6 +257,17 @@ class TestSaveIntrinsicsReport:
         assert "field_of_view" in report
         assert "horizontal_deg" in report["field_of_view"]
 
+    def test_report_contains_calibration_source(self, temp_dir, sample_calibration):
+        info = ImageInfo(path=temp_dir / "test.jpg", exif_data={})
+        output_path = temp_dir / "intrinsics.json"
+
+        save_intrinsics_report(sample_calibration, [info], 1920, 1080, output_path)
+
+        with open(output_path) as f:
+            report = json.load(f)
+
+        assert report["estimation_source"] == "test"
+
 
 class TestUndistortImages:
     """Tests for undistort_images function."""
@@ -300,4 +311,3 @@ class TestUndistortImages:
         assert images[0].shape == sample_image.shape
         # New calibration should have no distortion
         assert new_calib.dist_coeffs is None
-

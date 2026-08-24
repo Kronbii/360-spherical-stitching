@@ -104,7 +104,7 @@ def match_features_knn(
     desc1: np.ndarray,
     desc2: np.ndarray,
     ratio_threshold: float = 0.7,
-    symmetric: bool = True
+    symmetric: bool = False
 ) -> List[cv2.DMatch]:
     """
     Match features using BFMatcher with kNN and ratio test.
@@ -535,6 +535,11 @@ def check_matching_quality(results: List[MatchResult], min_inliers: int) -> Tupl
     msg_parts = [f"Matching failed for {len(failed_pairs)} pair(s):"]
     for src, dst, inliers in failed_pairs:
         msg_parts.append(f"  - Pair ({src},{dst}): {inliers} inliers (need {min_inliers})")
+
+    msg_parts.extend([
+        "Suggestions:",
+        "  - Capture more overlap or add texture in the failed region.",
+        "  - Try a lower min_inliers value or enable CLAHE for low-contrast frames.",
+    ])
     
     return False, "\n".join(msg_parts)
-

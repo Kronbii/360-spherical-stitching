@@ -520,9 +520,6 @@ def run_pipeline(config: PipelineConfig) -> Path:
         # Create undistort function if needed
         undistort_func = None
         if needs_undistort:
-            from .intrinsics import undistort_image_single
-            import cv2
-            
             # Compute undistortion maps once (they're the same for all images)
             dist_coeffs = np.array(calib_full.dist_coeffs, dtype=np.float64)
             K = calib_full.K
@@ -531,13 +528,13 @@ def run_pipeline(config: PipelineConfig) -> Path:
             map1, map2 = cv2.initUndistortRectifyMap(K, dist_coeffs, None, new_K, (w, h), cv2.CV_32FC1)
             
             # Update calibration to use new K matrix (no distortion after undistortion)
-            from .config import CalibrationData
             calib_full = CalibrationData(
                 fx=new_K[0, 0],
                 fy=new_K[1, 1],
                 cx=new_K[0, 2],
                 cy=new_K[1, 2],
-                dist_coeffs=None
+                dist_coeffs=None,
+                source=f"{calib_full.source}; undistorted",
             )
             
             # Create undistort function using precomputed maps
@@ -600,9 +597,14 @@ def run_pipeline(config: PipelineConfig) -> Path:
         logger.info("\n[STEP 7] Blending panorama...")
         
         panorama = blend_panorama(warped_images, masks, config.blending)
+
+        if config.debug.enabled and config.debug.save_seams:
+            seam_vis = create_seam_visualization(warped_images, masks)
+            cv2.imwrite(str(config.output_dir / "debug" / "seams.jpg"), seam_vis)
         
         # Free warped_images from memory
         del warped_images
+        warped_images = None
     
     # Coverage statistics (for "none" blending)
     if config.blending.method == "none":
@@ -611,11 +613,6 @@ def run_pipeline(config: PipelineConfig) -> Path:
     
     # Fill any gaps
     panorama = fill_gaps(panorama, masks)
-    
-    # Save debug seam visualization (only if we have warped_images stored)
-    if config.debug.enabled and config.debug.save_seams and warped_images is not None:
-        seam_vis = create_seam_visualization(warped_images, masks)
-        cv2.imwrite(str(config.output_dir / "debug" / "seams.jpg"), seam_vis)
     
     # ============================================================
     # STEP 9: Save panorama and create viewer
@@ -647,4 +644,3 @@ def run_pipeline(config: PipelineConfig) -> Path:
     logger.info("=" * 60)
     
     return pano_path
-
