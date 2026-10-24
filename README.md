@@ -121,6 +121,51 @@ The demo site walks through the same run stage by stage, including a real ORB ma
 visualization and a wipe comparison of smoothing on versus off:
 **[360.ramikronbi.com](https://360.ramikronbi.com)**
 
+## v2: gyro prior and bundle adjustment (validated in simulation)
+
+A second orientation path for captures that come with a gyroscope log. It is validated
+on simulated data only so far; `run.py` still uses the v1 path for real videos.
+
+1. **Gyro prior** — the gyro is integrated between frame timestamps to give every frame
+   a dead-reckoned orientation ([imu.py](src/imu.py)).
+2. **Pair selection** — adjacent and nearby pairs, plus any pair the prior says should
+   overlap. After a full turn that includes the last frames against the first ones: the
+   loop closures chaining never sees.
+3. **Guided matching** — ORB matches are only searched near where the prior predicts
+   each keypoint lands, and a rotation-only model (3 degrees of freedom, two-point
+   RANSAC on bearing vectors) replaces the homography ([guided_match.py](src/guided_match.py)).
+4. **Bundle adjustment** — every rotation and one shared focal length solved together
+   over all pairs, with a soft-L1 loss, starting from the gyro prior
+   ([bundle_adjust.py](src/bundle_adjust.py)).
+5. **Warp and blend** — unchanged from v1.
+
+The simulator ([simulate.py](src/simulate.py)) renders pinhole frames from an existing
+equirectangular image for a camera turning about its centre, and a 200 Hz gyro with
+bias, bias random walk, scale error and noise. Ground truth is exact, so each stage can
+be scored:
+
+```bash
+python run_sim.py --world showcase/panorama.jpg --out output/sim
+python scripts/make_v2_media.py --sim output/sim     # figures and a short video
+```
+
+On the default run (73 frames, 396° of yaw, starting focal length 3.5% short):
+
+| Orientation source              | Mean error | Last frame | Reprojection RMS |
+| ------------------------------- | ---------: | ---------: | ---------------: |
+| Gyro only                       |      2.01° |      4.27° |          19.0 px |
+| Pairwise chain, v1 homography   |      1.35° |      2.09° |          14.8 px |
+| Pairwise chain, v2 rotation     |      6.13° |     12.21° |         100.1 px |
+| Bundle adjusted                 |      0.04° |      0.03° |          0.99 px |
+
+Bundle adjustment also recovers the focal length to within 0.02%. The rotation-only chain
+is the most sensitive to a wrong focal length, which is why the global solve matters
+more than the pairwise model: with the focal length exact, the same chain ends 0.12° off
+and bundle adjustment 0.02°.
+
+Not simulated: parallax from camera translation, lens distortion, rolling shutter, motion
+blur, camera–gyro time offset and misalignment. Real captures will score worse.
+
 ## Assumptions and limits
 
 - **Rotation only.** The camera is assumed to turn about its optical centre. Translate
@@ -132,8 +177,9 @@ visualization and a wipe comparison of smoothing on versus off:
 - **Texture drives the estimate.** Blank walls, blown highlights, and repeating patterns
   produce few usable inliers. The pipeline carries on by borrowing a neighbour's rotation
   rather than dropping the frame.
-- **No bundle adjustment and no exposure matching.** Error accumulates along the chain
-  instead of being distributed around the loop, and frames keep their own exposure.
+- **No bundle adjustment on the v1 path, and no exposure matching.** Error accumulates
+  along the chain instead of being distributed around the loop, and frames keep their own
+  exposure. The v2 path above adds bundle adjustment, but needs a gyro log.
 
 ## Tests
 
@@ -148,6 +194,8 @@ and warping.
 
 ```
 run.py            entry point: load config, extract frames, run the pipeline
+run_sim.py        v2 validation on a simulated sweep with ground truth
+scripts/          media for the v2 simulation (figures, video)
 src/pipeline.py   the eight stages, in order, with logging
 src/              one module per stage (see "How it works")
 tests/            pytest suite

@@ -4,6 +4,7 @@ numpy>=1.24.0
 Pillow>=10.0.0
 exifread>=3.0.0
 natsort>=8.4.0
+scipy>=1.10.0  # v2 bundle adjustment (src/bundle_adjust.py)
 
 # Development and testing dependencies
 pytest>=7.4.0
