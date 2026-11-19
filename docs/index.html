@@ -441,6 +441,10 @@ td.n{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-variant-numer
         <p>The pipeline now checks: it measures the real span, tries to match the tail against the head, and when
         nothing matches it squeezes the sweep to <b>318°</b> so the two ends stop short of touching. The
         correction is spread along the sequence rather than dumped at the join.</p>
+        <p>Since <a href="https://github.com/Kronbii/360-spherical-stitching/releases/tag/2.0.0" rel="noopener">2.0</a>
+        the default method solves every orientation together by bundle adjustment instead. With the focal
+        length measured on a full turn (the configured one was 11.6% short), the same clip comes out at
+        <b>323.6°</b> and needs no squeeze.</p>
       </div>
     </div>
   </div>
@@ -547,7 +551,8 @@ open output/&lt;name&gt;/viewer/index.html</pre>
         <dl class="kv">
           <dt>Docs</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/blob/main/USAGE.md" rel="noopener">USAGE.md</a> — every option, with defaults</dd>
           <dt>Method</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/blob/main/TECHNICAL.md" rel="noopener">TECHNICAL.md</a> — the geometry, written out</dd>
-          <dt>Smoothing</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/blob/main/TEMPORAL_SMOOTHING.md" rel="noopener">TEMPORAL_SMOOTHING.md</a> — window sizing</dd>
+          <dt>Smoothing</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/blob/main/TEMPORAL_SMOOTHING.md" rel="noopener">TEMPORAL_SMOOTHING.md</a> — the v1 chain method</dd>
+          <dt>Release</dt><dd><a href="https://github.com/Kronbii/360-spherical-stitching/releases/tag/2.0.0" rel="noopener">2.0.0</a> — bundle adjustment, loop closure, optional gyro</dd>
           <dt>Needs</dt><dd>Python 3.12, OpenCV, NumPy. No GPU.</dd>
         </dl>
       </div>
@@ -562,10 +567,12 @@ open output/&lt;name&gt;/viewer/index.html</pre>
 <span class="k">matching</span>:
   <span class="k">match_full_res</span>: true
   <span class="k">min_inliers</span>: 200
-  <span class="k">rotation_smoothing_window</span>: 17
+
+<span class="k">orientation</span>:
+  <span class="k">method</span>: bundle      <span class="c"># chain = v1, smoothed</span>
 
 <span class="k">intrinsics</span>:
-  <span class="k">hfov_deg</span>: 42
+  <span class="k">calib_json</span>: ./intrinsics.json
 
 <span class="k">output</span>:
   <span class="k">pano_width</span>: 4096</pre>

@@ -1,227 +1,103 @@
-# Temporal Smoothing Algorithm - Exact Implementation
+# Temporal Smoothing (v1 `chain` method)
 
-This document describes **exactly** how temporal smoothing is applied to rotation matrices to reduce jitter between frames.
+This document describes exactly how the `chain` orientation method smooths its rotations,
+as implemented in `smooth_rotations_temporal` and `reflect_pad_rotations` in
+[src/rotation.py](src/rotation.py).
 
-## Overview
+> **Applies to `orientation.method: chain` only.** The default method since 2.0, `bundle`,
+> does not smooth: it solves every rotation against every matched pair at once, which
+> removes the jitter at its source instead of averaging real motion away with it. With
+> `bundle`, `rotation_smoothing_window` is ignored. See [README.md](README.md) and
+> [USAGE.md](USAGE.md#orientation).
 
-Temporal smoothing uses a **moving average filter** on rotation matrices. The key insight is that for small rotations in smooth sequences, averaging rotation matrices directly and then re-orthonormalizing produces good results.
+## Why smooth at all
 
-## Algorithm Steps
+Each pairwise rotation is estimated independently, so every frame carries a few tenths of a
+degree of pitch and roll error. Chained together, that shows up as a staircase along any long
+straight edge. A moving average over the chained rotations damps it. It does not remove the
+error that accumulates along the chain; only a global solve does that.
+
+## Algorithm
 
 ### Input
-- `global_rotations`: List of N 3×3 rotation matrices `[R₀, R₁, R₂, ..., Rₙ₋₁]`
-- `window_size`: Odd integer (default 3, typically 3-15)
 
-### Step-by-Step Process
+- `global_rotations`: the chained rotations `[R₀, R₁, ..., Rₙ₋₁]` (world → camera).
+- `window_size`: odd integer; even values are rounded up, values below 3 become 3.
 
-#### 1. **Window Size Validation**
-```python
-if window_size % 2 == 0:
-    window_size += 1  # Make odd
-if window_size < 3:
-    window_size = 3
+### 1. Pad by reflection
 
-half_window = window_size // 2  # e.g., window_size=5 → half_window=2
-```
-
-#### 2. **Initialize Output**
-```python
-smoothed = [global_rotations[0]]  # First rotation stays unchanged (reference frame)
-```
-
-**Important**: The first rotation matrix is kept as-is because it's the reference frame (typically identity).
-
-#### 3. **Process Middle Frames (i = 1 to N-2)**
-
-For each frame index `i` from 1 to N-2:
+Every frame gets a full, centred window, including the first and last. The sequence is
+extended by `half = window_size // 2` frames at each end, reflected so that it *continues*
+the motion rather than repeating the end pose:
 
 ```python
-for i in range(1, len(global_rotations) - 1):
-    # Step 3a: Define window boundaries
-    start_idx = max(0, i - half_window)
-    end_idx = min(len(global_rotations), i + half_window + 1)
-    
-    # Step 3b: Collect all rotations in the window
-    window_rots = []
-    for j in range(start_idx, end_idx):
-        window_rots.append(global_rotations[j])
-    
-    # Step 3c: Average the rotation matrices element-wise
-    R_avg = np.mean(window_rots, axis=0)  # Shape: (3, 3)
-    
-    # Step 3d: Re-orthonormalize to ensure valid rotation matrix
-    R_smooth = orthonormalize_rotation(R_avg)
-    
-    smoothed.append(R_smooth)
+left  = [R₀ @ R_k.T @ R₀           for k = half, ..., 1]
+right = [Rₙ₋₁ @ R_{n-1-k}.T @ Rₙ₋₁ for k = 1, ..., half]
+padded = left + global_rotations + right
 ```
 
-#### 4. **Final Frame**
-```python
-smoothed.append(global_rotations[-1])  # Last rotation stays unchanged
-```
+For a yaw-only sweep this is `yaw[-k] = 2·yaw[0] − yaw[k]` at the start, and the mirror of
+that at the end. Clamping the window instead would average the tail mostly against earlier
+frames and drag it backwards; leaving the last frame unsmoothed would make it snap away from
+its smoothed neighbours, a visible tear on a clip that ends mid-motion.
 
-**Important**: The last rotation matrix is also kept as-is.
-
-### Example: Window Size = 5
-
-For a sequence of 10 rotations with `window_size=5` (half_window=2):
-
-- **Frame 0**: Unchanged (reference)
-- **Frame 1**: Average of frames [0, 1, 2, 3] (window clipped at start)
-- **Frame 2**: Average of frames [0, 1, 2, 3, 4]
-- **Frame 3**: Average of frames [1, 2, 3, 4, 5]
-- **Frame 4**: Average of frames [2, 3, 4, 5, 6]
-- **Frame 5**: Average of frames [3, 4, 5, 6, 7]
-- **Frame 6**: Average of frames [4, 5, 6, 7, 8]
-- **Frame 7**: Average of frames [5, 6, 7, 8, 9] (window clipped at end)
-- **Frame 8**: Average of frames [6, 7, 8, 9] (window clipped at end)
-- **Frame 9**: Unchanged (last frame)
-
-## Orthonormalization (Critical Step)
-
-After averaging, the matrix `R_avg` is no longer guaranteed to be a valid rotation matrix. It must be orthonormalized using **SVD (Singular Value Decomposition)**:
+### 2. Average and project back onto a rotation
 
 ```python
-def orthonormalize_rotation(R_raw: np.ndarray) -> np.ndarray:
-    # Step 1: Compute SVD
-    U, S, Vt = np.linalg.svd(R_raw)
-    
-    # Step 2: Reconstruct rotation matrix
-    R = U @ Vt
-    
-    # Step 3: Ensure proper rotation (det = +1, not reflection)
-    if np.linalg.det(R) < 0:
-        U[:, -1] *= -1  # Flip last column of U
-        R = U @ Vt
-    
-    return R
+for i in range(n):
+    window = padded[i : i + 2 * half + 1]
+    smoothed[i] = orthonormalize_rotation(np.mean(window, axis=0))
 ```
 
-**Why SVD?**
-- SVD decomposes `R_raw = U @ diag(S) @ Vt`
-- For a valid rotation matrix, we want `R = U @ Vt` (ignoring singular values)
-- This gives the closest valid rotation matrix to `R_raw` in the Frobenius norm
-
-## Mathematical Details
-
-### Matrix Averaging
-
-For a window of rotation matrices `[R₁, R₂, ..., Rₖ]`, the average is:
-
-```
-R_avg = (1/k) * (R₁ + R₂ + ... + Rₖ)
-```
-
-This is **element-wise averaging** of the 3×3 matrices.
-
-### Why This Works for Small Rotations
-
-For small rotations, the rotation matrices are close to identity:
-- `R ≈ I + ε` where `ε` is small
-- Averaging: `(I + ε₁ + I + ε₂ + ...)/k ≈ I + (ε₁ + ε₂ + ...)/k`
-- After orthonormalization, this gives a smooth interpolation
-
-**Note**: This is an approximation. For large rotations, you might want to use:
-- Lie algebra (matrix logarithm): `log(R_avg) = mean([log(R₁), log(R₂), ...])`
-- Quaternion averaging
-- But for typical panorama sequences with small per-frame rotations, direct averaging works well.
-
-## Implementation in Pipeline
-
-The smoothing is applied **after** rotation chaining:
+Averaging the matrices element-wise is accurate for the small rotations between nearby video
+frames; the average is not a rotation, so SVD projects it back onto the closest one:
 
 ```python
-# 1. Chain relative rotations to get global rotations
-global_rotations = chain_rotations(relative_rotations, apply_smoothing=False)
-
-# 2. Apply temporal smoothing
-if apply_smoothing and len(global_rotations) > 3:
-    global_rotations = smooth_rotations_temporal(
-        global_rotations, 
-        window_size=smoothing_window
-    )
-```
-
-## Key Properties
-
-1. **Boundary Conditions**: First and last rotations are never smoothed (kept as reference)
-2. **Symmetric Window**: Window is centered on each frame (when possible)
-3. **Edge Handling**: At sequence boundaries, window is clipped (not padded)
-4. **Orthonormalization**: Every smoothed rotation is re-orthonormalized via SVD
-5. **Determinant Check**: Ensures `det(R) = +1` (proper rotation, not reflection)
-
-## Replication in Another Pipeline
-
-To replicate this in another pipeline:
-
-```python
-import numpy as np
-
 def orthonormalize_rotation(R_raw):
-    """Orthonormalize matrix to valid rotation using SVD."""
     U, S, Vt = np.linalg.svd(R_raw)
     R = U @ Vt
-    if np.linalg.det(R) < 0:
+    if np.linalg.det(R) < 0:        # a reflection, not a rotation
         U[:, -1] *= -1
         R = U @ Vt
     return R
+```
 
-def smooth_rotations_temporal(global_rotations, window_size=3):
-    """
-    Apply temporal smoothing to rotation matrices.
-    
-    Args:
-        global_rotations: List of 3×3 rotation matrices
-        window_size: Odd integer, size of smoothing window
-    
-    Returns:
-        List of smoothed rotation matrices
-    """
-    n = len(global_rotations)
-    if n <= 2:
-        return global_rotations
-    
-    # Ensure odd window size
-    if window_size % 2 == 0:
-        window_size += 1
-    if window_size < 3:
-        window_size = 3
-    
-    half_window = window_size // 2
-    smoothed = [global_rotations[0]]  # First unchanged
-    
-    # Process middle frames
-    for i in range(1, n - 1):
-        # Define window
-        start_idx = max(0, i - half_window)
-        end_idx = min(n, i + half_window + 1)
-        
-        # Collect rotations in window
-        window_rots = global_rotations[start_idx:end_idx]
-        
-        # Average element-wise
-        R_avg = np.mean(window_rots, axis=0)
-        
-        # Re-orthonormalize
-        R_smooth = orthonormalize_rotation(R_avg)
-        smoothed.append(R_smooth)
-    
-    # Last unchanged
-    smoothed.append(global_rotations[-1])
-    
-    return smoothed
+### 3. Put frame 0 back
+
+Frame 0 is the reference every other frame is expressed against, so the correction that
+returns it exactly to its original orientation is applied to the whole sequence:
+
+```python
+C = global_rotations[0] @ smoothed[0].T
+smoothed = [orthonormalize_rotation(C @ R) for R in smoothed]
+```
+
+## Where it runs
+
+In the `chain` method, after the relative rotations are chained and before the wrap check
+([src/pipeline.py](src/pipeline.py), `orient_with_chain`):
+
+```python
+global_rotations = chain_rotations(
+    relative_rotations,
+    apply_smoothing=config.matching.rotation_smoothing_window > 1,
+    smoothing_window=config.matching.rotation_smoothing_window,
+)
 ```
 
 ## Configuration
 
-In your config, the smoothing window is controlled by:
 ```yaml
+orientation:
+  method: chain
 matching:
-  rotation_smoothing_window: 3  # Default, can increase to 7-15 for smoother results
+  rotation_smoothing_window: 17   # 1 turns smoothing off
 ```
 
-**Guidelines**:
-- **window_size = 3**: Minimal smoothing, preserves more detail
-- **window_size = 5-7**: Good balance for most videos
-- **window_size = 9-15**: Strong smoothing, straighter lines, may oversmooth fast motion
+- **3**: minimal smoothing.
+- **5–9**: a balance for most videos.
+- **11–17**: straighter long edges on slow sweeps; on fast or uneven motion it starts to bend
+  real movement, which is what bundle adjustment avoids.
 
+On the sample run a window of 17 makes pitch wobble about 16× and roll wobble about 15× quieter
+(wobble measured as the standard deviation of the second difference, sweep removed).
