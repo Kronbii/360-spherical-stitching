@@ -18,6 +18,15 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Written next to extracted frames: file name and presentation time of each
+FRAME_TIMES_FILENAME = "frame_times.csv"
+
+
+def _record_time(cap: cv2.VideoCapture, frame_times: Optional[List[float]]) -> None:
+    """Append the presentation time (s) of the frame just read, if times are being kept."""
+    if frame_times is not None:
+        frame_times.append(cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0)
+
 
 def check_ffmpeg_available() -> bool:
     """Check if ffmpeg is available on the system."""
@@ -60,7 +69,8 @@ def extract_frames_uniform(
     video_path: Path,
     output_dir: Path,
     num_frames: int = 30,
-    quality: int = 95
+    quality: int = 95,
+    frame_times: Optional[List[float]] = None
 ) -> List[Path]:
     """
     Extract frames uniformly distributed across the video duration.
@@ -112,6 +122,7 @@ def extract_frames_uniform(
         frame_path = output_dir / f"frame_{i:04d}.jpg"
         cv2.imwrite(str(frame_path), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
         extracted_paths.append(frame_path)
+        _record_time(cap, frame_times)
         
         time_sec = frame_idx / fps
         logger.debug(f"Extracted frame {i+1}/{num_frames} (frame {frame_idx}, t={time_sec:.2f}s)")
@@ -126,7 +137,8 @@ def extract_frames_interval(
     video_path: Path,
     output_dir: Path,
     frame_interval: int = 15,
-    quality: int = 95
+    quality: int = 95,
+    frame_times: Optional[List[float]] = None
 ) -> List[Path]:
     """
     Extract every Nth frame from the video.
@@ -172,6 +184,7 @@ def extract_frames_interval(
             frame_path = output_dir / f"frame_{output_idx:04d}.jpg"
             cv2.imwrite(str(frame_path), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
             extracted_paths.append(frame_path)
+            _record_time(cap, frame_times)
             
             time_sec = frame_idx / fps
             logger.debug(f"Extracted frame {output_idx+1} (frame {frame_idx}, t={time_sec:.2f}s)")
@@ -189,7 +202,8 @@ def extract_frames_fps(
     video_path: Path,
     output_dir: Path,
     target_fps: float = 2.0,
-    quality: int = 95
+    quality: int = 95,
+    frame_times: Optional[List[float]] = None
 ) -> List[Path]:
     """
     Extract frames at a target frames-per-second rate.
@@ -224,7 +238,7 @@ def extract_frames_fps(
     
     cap.release()
     
-    return extract_frames_interval(video_path, output_dir, frame_interval, quality)
+    return extract_frames_interval(video_path, output_dir, frame_interval, quality, frame_times)
 
 
 def extract_keyframes_motion(
@@ -233,7 +247,8 @@ def extract_keyframes_motion(
     min_frames: int = 20,
     max_frames: int = 100,
     motion_threshold: float = 0.02,
-    quality: int = 95
+    quality: int = 95,
+    frame_times: Optional[List[float]] = None
 ) -> List[Path]:
     """
     Extract keyframes based on motion detection.
@@ -337,6 +352,7 @@ def extract_keyframes_motion(
         frame_path = output_dir / f"frame_{i:04d}.jpg"
         cv2.imwrite(str(frame_path), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
         extracted_paths.append(frame_path)
+        _record_time(cap, frame_times)
         
         time_sec = frame_idx / fps
         logger.debug(f"Extracted keyframe {i+1}/{len(sorted_indices)} (t={time_sec:.2f}s)")
@@ -386,22 +402,29 @@ def extract_frames_from_video(
     # Get video info
     info = get_video_info(video_path)
     
-    # Extract based on method
+    # Extract based on method. Each frame's presentation time is kept alongside it: a
+    # gyroscope log can only be lined up against real timestamps, and phone video does
+    # not run at exactly its nominal frame rate.
+    times: List[float] = []
     if method == "uniform":
-        return extract_frames_uniform(video_path, output_dir, num_frames, quality)
+        paths = extract_frames_uniform(video_path, output_dir, num_frames, quality, frame_times=times)
     elif method == "interval":
-        return extract_frames_interval(video_path, output_dir, frame_interval, quality)
+        paths = extract_frames_interval(video_path, output_dir, frame_interval, quality, frame_times=times)
     elif method == "fps":
-        return extract_frames_fps(video_path, output_dir, target_fps, quality)
+        paths = extract_frames_fps(video_path, output_dir, target_fps, quality, frame_times=times)
     elif method == "motion":
-        return extract_keyframes_motion(
+        paths = extract_keyframes_motion(
             video_path, output_dir,
             min_frames=min_frames,
             max_frames=max_frames,
             motion_threshold=motion_threshold,
-            quality=quality
+            quality=quality,
+            frame_times=times,
         )
     else:
         raise ValueError(f"Unknown extraction method: {method}")
 
-
+    if len(times) == len(paths) and paths:
+        from .imu import write_frame_times
+        write_frame_times(output_dir / FRAME_TIMES_FILENAME, [p.name for p in paths], times)
+    return paths

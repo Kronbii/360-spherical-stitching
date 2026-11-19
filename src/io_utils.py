@@ -4,6 +4,9 @@ I/O utilities for image loading, EXIF parsing, and robust image sorting.
 
 import logging
 import os
+import threading
+from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -360,3 +363,53 @@ def save_image(image: np.ndarray, output_path: Path, quality: int = 95) -> None:
     
     logger.info(f"Saved image to {output_path}")
 
+
+
+class LazyImages(Sequence):
+    """
+    Frames that load from disk when indexed, keeping only the most recent ones.
+
+    Behaves like the list load_images returns (len, indexing, slicing), so matching code
+    can take either. Holding every full-resolution frame of a long video at once costs
+    gigabytes; matching only ever needs a few at a time.
+
+    Args:
+        image_infos: Frames, in processing order.
+        max_width: Optional downscale width, as in load_image.
+        cache_bytes: Upper bound on decoded frames kept around.
+    """
+
+    def __init__(self, image_infos: List[ImageInfo], max_width: Optional[int] = None,
+                 cache_bytes: int = 512 * 1024 * 1024):
+        self.image_infos = list(image_infos)
+        self.max_width = max_width
+        self.cache_bytes = cache_bytes
+        self._cache: "OrderedDict[int, np.ndarray]" = OrderedDict()
+        self._held = 0
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self.image_infos)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return LazyImages(self.image_infos[index], self.max_width, self.cache_bytes)
+        n = len(self.image_infos)
+        if index < 0:
+            index += n
+        if not 0 <= index < n:
+            raise IndexError(f"frame {index} out of range ({n} frames)")
+        with self._lock:
+            img = self._cache.get(index)
+            if img is not None:
+                self._cache.move_to_end(index)
+                return img
+        img = load_image(self.image_infos[index].path, self.max_width)
+        with self._lock:
+            if index not in self._cache:
+                self._cache[index] = img
+                self._held += img.nbytes
+                while self._held > self.cache_bytes and len(self._cache) > 1:
+                    _, old = self._cache.popitem(last=False)
+                    self._held -= old.nbytes
+        return img

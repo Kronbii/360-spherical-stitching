@@ -157,3 +157,256 @@ def predicted_overlap_pairs(
         for off in np.nonzero(dots >= cos_max)[0]:
             pairs.append((i, i + min_gap + int(off)))
     return pairs
+
+
+# ---------------------------------------------------------------------------------------
+# Reading real logs
+# ---------------------------------------------------------------------------------------
+
+_TIME_COLUMNS = ("t", "time_s", "seconds_elapsed", "time", "timestamp", "seconds", "sec")
+_AXIS_COLUMNS = {
+    0: ("wx", "x", "gx", "gyro_x", "gyrox", "rotationratex", "rotation_rate_x", "omega_x"),
+    1: ("wy", "y", "gy", "gyro_y", "gyroy", "rotationratey", "rotation_rate_y", "omega_y"),
+    2: ("wz", "z", "gz", "gyro_z", "gyroz", "rotationratez", "rotation_rate_z", "omega_z"),
+}
+
+
+def _time_to_seconds(t: np.ndarray) -> np.ndarray:
+    """
+    Convert a timestamp column to seconds, whatever unit the logger used.
+
+    Gyros sample at tens to thousands of hertz, so the median step identifies the unit:
+    ~0.001-0.05 in seconds, ~1-50 in milliseconds, and so on.
+    """
+    step = float(np.median(np.diff(t))) if len(t) > 1 else 1.0
+    for scale in (1.0, 1e-3, 1e-6, 1e-9):
+        if step * scale <= 0.1:
+            return t * scale
+    raise ValueError(f"Cannot tell the unit of gyro timestamps (median step {step})")
+
+
+def load_gyro_csv(path, units: str = "rad/s") -> GyroLog:
+    """
+    Read a gyroscope log from CSV.
+
+    Expects a header row. The time column is the first of t, time_s, seconds_elapsed,
+    time, timestamp, seconds; its unit (s, ms, us or ns) is inferred from the sample
+    spacing. Angular-rate columns are matched by common names (wx/x/gx/gyro_x/
+    rotationRateX ...), case-insensitively. Rates are in the device's own axes; the
+    pipeline works out how those map onto the camera.
+
+    Args:
+        path: CSV file.
+        units: "rad/s" or "deg/s".
+
+    Returns:
+        GyroLog sorted by time, with duplicate timestamps dropped.
+    """
+    import csv
+    from pathlib import Path
+
+    path = Path(path)
+    with path.open(newline="") as f:
+        reader = csv.reader(f)
+        header = [h.strip().lower() for h in next(reader)]
+        rows = [r for r in reader if r and any(c.strip() for c in r)]
+
+    def column(candidates):
+        for name in candidates:
+            if name in header:
+                return header.index(name)
+        return None
+
+    t_col = column(_TIME_COLUMNS)
+    w_cols = [column(_AXIS_COLUMNS[k]) for k in range(3)]
+    if t_col is None or any(c is None for c in w_cols):
+        raise ValueError(f"{path}: need a time column and three angular-rate columns, got {header}")
+
+    data = np.array([[float(r[t_col])] + [float(r[c]) for c in w_cols] for r in rows])
+    order = np.argsort(data[:, 0], kind="stable")
+    data = data[order]
+    keep = np.concatenate([[True], np.diff(data[:, 0]) > 0])
+    data = data[keep]
+
+    t = _time_to_seconds(data[:, 0])
+    omega = data[:, 1:4]
+    if units in ("deg/s", "deg_s", "dps"):
+        omega = np.radians(omega)
+    elif units not in ("rad/s", "rad_s"):
+        raise ValueError(f"Unknown gyro units {units!r}; use 'rad/s' or 'deg/s'")
+    logger.info(f"Gyro log {path.name}: {len(t)} samples over {t[-1] - t[0]:.1f}s "
+                f"(~{(len(t) - 1) / (t[-1] - t[0]):.0f} Hz)")
+    return GyroLog(t=t, omega=omega)
+
+
+def write_frame_times(path, names: List[str], times: List[float]) -> None:
+    """Write a frame_times.csv: one row per frame, file name and time in seconds."""
+    from pathlib import Path
+    with Path(path).open("w") as f:
+        f.write("file,time_s\n")
+        for name, t in zip(names, times):
+            f.write(f"{name},{t:.6f}\n")
+
+
+def load_frame_times(path, names: List[str]) -> np.ndarray:
+    """
+    Timestamps (s) for the named frames, in the order given, from a frame_times.csv.
+
+    Raises:
+        ValueError: If a frame has no timestamp.
+    """
+    import csv
+    from pathlib import Path
+
+    with Path(path).open(newline="") as f:
+        table = {row["file"].strip(): float(row["time_s"]) for row in csv.DictReader(f)}
+    missing = [n for n in names if n not in table]
+    if missing:
+        raise ValueError(f"{path}: no timestamp for {len(missing)} frame(s), e.g. {missing[0]}")
+    return np.array([table[n] for n in names])
+
+
+# ---------------------------------------------------------------------------------------
+# Calibrating a gyro against the video: time offset and axes
+# ---------------------------------------------------------------------------------------
+
+def parse_axes(spec: List[str]) -> np.ndarray:
+    """
+    Rotation taking gyro axes to camera axes from a list like ["x", "-y", "-z"].
+
+    Entry k names the gyro axis (with sign) that becomes camera axis k. Camera axes are
+    x right, y down, z forward. ["x", "-y", "-z"] is a phone's rear camera in the
+    upright orientation of the video, for the iOS / Android device frame (x right,
+    y up, z out of the screen).
+    """
+    if len(spec) != 3:
+        raise ValueError(f"axes needs three entries, got {spec}")
+    R = np.zeros((3, 3))
+    for row, s in enumerate(spec):
+        s = str(s).strip().lower()
+        sign = -1.0 if s.startswith("-") else 1.0
+        axis = s.lstrip("+-")
+        if axis not in ("x", "y", "z"):
+            raise ValueError(f"Bad axis {s!r} in {spec}")
+        R[row, "xyz".index(axis)] = sign
+    if not np.isclose(np.linalg.det(R), 1.0):
+        raise ValueError(f"axes {spec} is not a rotation (each axis once, determinant +1)")
+    return R
+
+
+def _cumulative_angle(gyro: GyroLog) -> np.ndarray:
+    """∫|ω|dt at every gyro sample (trapezoid rule)."""
+    speed = np.linalg.norm(gyro.omega, axis=1)
+    return np.concatenate([[0.0], np.cumsum(0.5 * (speed[1:] + speed[:-1]) * np.diff(gyro.t))])
+
+
+def estimate_time_offset(
+    gyro: GyroLog,
+    frame_times: np.ndarray,
+    vision_angles: np.ndarray,
+    coarse_step_s: float = 0.005,
+) -> tuple:
+    """
+    Offset between the gyro clock and the video clock: gyro_time = video_time + offset.
+
+    The angle the camera turns between two frames is the same whichever sensor measures
+    it and whichever axes it is measured in, so it can be lined up before anything else
+    is known. For every candidate offset, the gyro's turn over each frame interval is
+    correlated with the turn the images saw; the offset with the highest correlation
+    wins, then gets refined on a finer grid.
+
+    Args:
+        gyro: Gyro log on its own clock and axes.
+        frame_times: Frame timestamps on the video clock.
+        vision_angles: Angle (rad) turned over each frame interval, NaN where unknown.
+
+    Returns:
+        (offset_s, correlation at the best offset).
+    """
+    frame_times = np.asarray(frame_times, dtype=np.float64)
+    valid = np.isfinite(vision_angles)
+    if valid.sum() < 5:
+        raise ValueError("Too few frame intervals with a vision rotation to align the gyro clock")
+    lo = gyro.t[0] - frame_times[0]
+    hi = gyro.t[-1] - frame_times[-1]
+    if hi < lo:
+        raise ValueError("The gyro log is shorter than the video; it cannot cover every frame")
+
+    A = _cumulative_angle(gyro)
+    t0, t1 = frame_times[:-1][valid], frame_times[1:][valid]
+    v = vision_angles[valid]
+    v = (v - v.mean()) / (v.std() + 1e-12)
+
+    def scores(offsets):
+        out = np.empty(len(offsets))
+        for s in range(0, len(offsets), 2048):
+            o = offsets[s:s + 2048, None]
+            g = np.interp(t1[None, :] + o, gyro.t, A) - np.interp(t0[None, :] + o, gyro.t, A)
+            g = (g - g.mean(axis=1, keepdims=True)) / (g.std(axis=1, keepdims=True) + 1e-12)
+            out[s:s + 2048] = (g * v[None, :]).mean(axis=1)
+        return out
+
+    coarse = np.arange(lo, hi + coarse_step_s / 2, coarse_step_s) if hi > lo else np.array([lo])
+    c = scores(coarse)
+    best = coarse[int(np.argmax(c))]
+    fine = np.clip(np.arange(best - 2 * coarse_step_s, best + 2 * coarse_step_s, 1e-4), lo, hi)
+    f = scores(fine)
+    k = int(np.argmax(f))
+    return float(fine[k]), float(f[k])
+
+
+def gyro_interval_rotvecs(gyro: GyroLog, frame_times: np.ndarray) -> np.ndarray:
+    """Rotation vector of the body increment over each frame interval, in the gyro's axes."""
+    R = integrate_gyro(gyro, frame_times, np.eye(3))
+    return np.array([so3_log(R[k] @ R[k + 1].T) for k in range(len(R) - 1)])
+
+
+def estimate_axis_alignment(
+    gyro_rotvecs: np.ndarray,
+    vision_rotvecs: np.ndarray,
+    snap_deg: float = 10.0,
+) -> tuple:
+    """
+    Rotation taking gyro axes to camera axes, from per-interval rotations of both.
+
+    Each frame interval gives the same rotation twice, once in the gyro's axes and once
+    in the camera's: v_k ≈ R g_k. Kabsch finds R. Phones mount the IMU square to the
+    camera, so a result within snap_deg of an axis permutation is snapped onto it.
+
+    Args:
+        gyro_rotvecs: (N, 3) gyro rotation vectors per interval.
+        vision_rotvecs: (N, 3) camera rotation vectors for the same intervals (NaN rows
+            are skipped).
+
+    Returns:
+        (R, snapped: bool, residual_deg: angle between the raw fit and the snapped one).
+    """
+    ok = np.all(np.isfinite(vision_rotvecs), axis=1) & (np.linalg.norm(vision_rotvecs, axis=1) > 1e-3)
+    if ok.sum() < 5:
+        raise ValueError("Too few frame intervals with enough rotation to align gyro axes")
+    H = gyro_rotvecs[ok].T @ vision_rotvecs[ok]
+    U, _, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+
+    # Nearest signed permutation with determinant +1
+    import itertools
+    best, best_err = None, np.inf
+    for perm in itertools.permutations(range(3)):
+        for signs in itertools.product((1.0, -1.0), repeat=3):
+            P = np.zeros((3, 3))
+            for row, (col, s) in enumerate(zip(perm, signs)):
+                P[row, col] = s
+            if np.linalg.det(P) < 0:
+                continue
+            err = rotation_error_degrees(R, P)
+            if err < best_err:
+                best, best_err = P, err
+    if best_err <= snap_deg:
+        return best, True, float(best_err)
+    return R, False, float(best_err)
+
+
+def gyro_to_camera(gyro: GyroLog, offset_s: float, R_cam_imu: np.ndarray) -> GyroLog:
+    """A gyro log moved onto the video clock and into camera axes."""
+    return GyroLog(t=gyro.t - offset_s, omega=gyro.omega @ R_cam_imu.T)

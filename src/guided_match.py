@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
+from scipy.spatial import cKDTree
 
 from .features import extract_orb_features
 from .imu import so3_log
@@ -84,6 +85,21 @@ def kabsch_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return Vt.T @ D @ U.T
 
 
+def batched_kabsch(a1: np.ndarray, b1: np.ndarray, a2: np.ndarray, b2: np.ndarray) -> np.ndarray:
+    """
+    Kabsch rotations for many two-point samples at once.
+
+    Sample k pairs bearings (a1[k], b1[k]) and (a2[k], b2[k]); the result R[k] is the
+    rotation with b ≈ R[k] @ a for both, exactly as kabsch_rotation would give.
+    """
+    H = a1[:, :, None] * b1[:, None, :] + a2[:, :, None] * b2[:, None, :]
+    U, _, Vt = np.linalg.svd(H)
+    V, Ut = np.transpose(Vt, (0, 2, 1)), np.transpose(U, (0, 2, 1))
+    d = np.sign(np.linalg.det(V @ Ut))
+    V[:, :, 2] *= d[:, None]
+    return V @ Ut
+
+
 def ransac_rotation(
     b_i: np.ndarray,
     b_j: np.ndarray,
@@ -112,17 +128,28 @@ def ransac_rotation(
         return None, np.zeros(n, bool)
     rng = rng or np.random.default_rng(0)
     cos_thr = np.cos(threshold_rad)
+
+    # Every sample is drawn up front and scored in batches: the per-sample work is a
+    # 3x3 SVD and one pass over the bearings, far too small to run one at a time.
+    first = rng.integers(0, n, iterations)
+    second = rng.integers(0, n - 1, iterations)
+    second += second >= first                      # two distinct indices per sample
+    usable = np.abs(np.einsum("ij,ij->i", b_i[first], b_i[second])) <= 0.9999
+    first, second = first[usable], second[usable]
+    if len(first) == 0:
+        return None, np.zeros(n, bool)
+    models = batched_kabsch(b_i[first], b_j[first], b_i[second], b_j[second])
+
     best_mask = np.zeros(n, bool)
     best_count = 0
-    for _ in range(iterations):
-        s = rng.choice(n, 2, replace=False)
-        if abs(b_i[s[0]] @ b_i[s[1]]) > 0.9999:
-            continue
-        R = kabsch_rotation(b_i[s], b_j[s])
-        mask = np.einsum("ij,ij->i", b_i @ R.T, b_j) >= cos_thr
-        count = int(mask.sum())
-        if count > best_count:
-            best_count, best_mask = count, mask
+    for start in range(0, len(models), 64):
+        chunk = models[start:start + 64]
+        cosines = np.einsum("kab,nb,na->kn", chunk, b_i, b_j, optimize=True)
+        masks = cosines >= cos_thr
+        counts = masks.sum(axis=1)
+        k = int(np.argmax(counts))
+        if counts[k] > best_count:
+            best_count, best_mask = int(counts[k]), masks[k]
     if best_count < 5:
         return None, best_mask
     # Refit on all inliers, then re-select once with the refined model
@@ -159,14 +186,31 @@ def guided_match(
 
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
     mask = None
-    if R_prior_ij is not None:
+    # Share of the frame a window covers. Past half, it restricts little and is not
+    # worth building; matching then searches the whole frame.
+    width, height = 2 * K[0, 2], 2 * K[1, 2]
+    window_share = np.pi * search_radius_px ** 2 / (width * height)
+    if R_prior_ij is not None and window_share < 0.5:
         b = pixels_to_bearings(feat_i.points, K) @ R_prior_ij.T
         pred, front = project_bearings(b, K)
         pred = pred.astype(np.float32)
-        dx = pred[:, None, 0] - feat_j.points[None, :, 0]
-        dy = pred[:, None, 1] - feat_j.points[None, :, 1]
-        d2 = dx * dx + dy * dy
-        mask = ((d2 <= search_radius_px ** 2) & front[:, None]).astype(np.uint8)
+        pts_j = feat_j.points
+        mask = np.zeros((len(pred), len(pts_j)), np.uint8)
+        if window_share < 0.02:
+            # Small windows: keypoints of frame j inside each one, from two k-d trees
+            rows_front = np.nonzero(front)[0]
+            if len(rows_front):
+                near = cKDTree(pred[front]).sparse_distance_matrix(
+                    cKDTree(pts_j), search_radius_px, output_type="ndarray")
+                mask[rows_front[near["i"]], near["j"]] = 1
+        else:
+            # Large windows hold most keypoints, and listing every hit would cost far
+            # more memory than the mask itself, so test distances in row blocks instead
+            r2 = np.float32(search_radius_px ** 2)
+            for s in range(0, len(pred), 256):
+                dx = pred[s:s + 256, None, 0] - pts_j[None, :, 0]
+                dy = pred[s:s + 256, None, 1] - pts_j[None, :, 1]
+                mask[s:s + 256] = (dx * dx + dy * dy <= r2) & front[s:s + 256, None]
 
     knn = matcher.knnMatch(feat_i.descriptors, feat_j.descriptors, k=2, mask=mask)
     idx_i, idx_j = [], []
@@ -193,9 +237,16 @@ def match_pair(
     max_prior_disagreement_deg: float = 5.0,
     min_inliers: int = 30,
     rng: Optional[np.random.Generator] = None,
+    use_window: bool = True,
 ) -> PairMatch:
-    """Guided matching plus rotation-only RANSAC for one frame pair."""
-    ii, jj = guided_match(feat_i, feat_j, K, R_prior_ij, search_radius_px)
+    """
+    Guided matching plus rotation-only RANSAC for one frame pair.
+
+    With use_window False the prior does not restrict where matches are searched, but a
+    fitted rotation that disagrees with it by more than max_prior_disagreement_deg is
+    still rejected.
+    """
+    ii, jj = guided_match(feat_i, feat_j, K, R_prior_ij if use_window else None, search_radius_px)
     empty = np.zeros((0, 2), np.float32)
     if len(ii) < min_inliers:
         return PairMatch(i, j, empty, empty, None, len(ii), 0)
@@ -210,8 +261,24 @@ def match_pair(
     if R_prior_ij is not None:
         disagreement = np.degrees(np.linalg.norm(so3_log(R @ R_prior_ij.T)))
         if disagreement > max_prior_disagreement_deg:
-            logger.debug(f"Pair ({i},{j}): rotation disagrees with gyro by "
+            logger.debug(f"Pair ({i},{j}): rotation disagrees with the prior by "
                          f"{disagreement:.1f}°, rejected")
             return PairMatch(i, j, empty, empty, None, len(ii), inliers)
 
     return PairMatch(i, j, p_i[mask], p_j[mask], R, len(ii), inliers)
+
+
+def draw_pair(img_i: np.ndarray, img_j: np.ndarray, pair: PairMatch, max_lines: int = 200) -> np.ndarray:
+    """Side-by-side image of a matched pair with its verified inlier correspondences."""
+    n = min(len(pair.pts_i), max_lines)
+    step = max(1, len(pair.pts_i) // max(n, 1))
+    idx = np.arange(0, len(pair.pts_i), step)[:n]
+    kp_i = [cv2.KeyPoint(float(x), float(y), 8) for x, y in pair.pts_i[idx]]
+    kp_j = [cv2.KeyPoint(float(x), float(y), 8) for x, y in pair.pts_j[idx]]
+    matches = [cv2.DMatch(k, k, 0.0) for k in range(len(idx))]
+    vis = cv2.drawMatches(img_i, kp_i, img_j, kp_j, matches, None, matchColor=(0, 255, 0),
+                          flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+    angle = np.degrees(np.linalg.norm(so3_log(pair.R_ij))) if pair.R_ij is not None else float("nan")
+    cv2.putText(vis, f"Pair ({pair.i},{pair.j}): {pair.inliers} inliers, {angle:.2f} deg",
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    return vis

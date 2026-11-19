@@ -4,9 +4,10 @@ Validate the v2 orientation pipeline on a simulated sweep with known ground trut
 
     python run_sim.py --world showcase/panorama.jpg --out output/sim
 
-Renders frames from an existing panorama, simulates a gyroscope, runs the gyro-only,
-pairwise-chained and bundle-adjusted estimates (plus the v1 homography chain for
-reference), and writes:
+Renders frames from an existing panorama, simulates a gyroscope, and scores against
+ground truth: the gyro alone, the v1 homography chain, the v2 pairwise chain, and
+bundle adjustment twice, once started from the gyro and once from the v1 chain (no
+gyro). Writes:
 
     metrics.json        per-method rotation error, end-to-start gap, reprojection RMS, focal
     sweep.npz           frames' timestamps, ground truth and every method's rotations
@@ -23,21 +24,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.config import BlendingConfig, CalibrationData, MatchingConfig
-from src.features import match_sequential_pairs
-from src.pipeline_v2 import V2Options, evaluate_against_truth, run_orientation_v2, stitch_equirectangular
-from src.rotation import chain_rotations, compute_relative_rotations
+from src.config import CalibrationData
+from src.pipeline_v2 import (V2Options, evaluate_against_truth, run_orientation_v2,
+                             run_orientation_without_imu, stitch_equirectangular)
 from src.simulate import SweepSpec, simulate_sweep
-
-
-def v1_homography_chain(frames, calib, smoothing_window):
-    """Orientations from the shipped v1 path: homography per pair, R = K⁻¹HK, chained."""
-    cfg = MatchingConfig(match_width=None, min_inliers=60,
-                         rotation_smoothing_window=smoothing_window)
-    results = match_sequential_pairs(frames, cfg, scale=1.0)
-    rel, _ = compute_relative_rotations(results, calib.K, 1.0)
-    return chain_rotations(rel, apply_smoothing=smoothing_window > 1,
-                           smoothing_window=smoothing_window)
 
 
 def main():
@@ -49,7 +39,8 @@ def main():
                     help="Relative error of the starting focal length (e.g. -0.035 = 3.5%% short)")
     ap.add_argument("--pano-width", type=int, default=2048)
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--skip-v1", action="store_true", help="Skip the v1 homography baseline")
+    ap.add_argument("--skip-v1", action="store_true",
+                    help="Skip the v1 homography baseline and bundle adjustment without the gyro")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -80,10 +71,16 @@ def main():
     log.info(f"v2 orientation: {time.time() - t0:.1f}s")
 
     extra = {}
+    no_imu = None
     if not args.skip_v1:
-        # v1 does not use the gyro; anchor its first frame like the others
-        v1 = v1_homography_chain(sim.frames, calib_init, smoothing_window=1)
-        extra["v1_homography_chain"] = [R @ sim.gt_rotations[0] for R in v1]
+        # Bundle adjustment without the gyro, started from the unsmoothed v1 chain and
+        # anchored at the same first frame as the gyro path
+        t0 = time.time()
+        no_imu, v1 = run_orientation_without_imu(sim.frames, calib_init, sim.gt_rotations[0],
+                                                 V2Options(seed=args.seed))
+        log.info(f"Bundle adjustment without gyro: {time.time() - t0:.1f}s")
+        extra["v1_homography_chain"] = v1
+        extra["bundle_adjusted_no_imu"] = (no_imu.rotations, no_imu.focal)
 
     metrics = evaluate_against_truth(result, sim.gt_rotations, sim.calib.fx,
                                      sim.calib.cx, sim.calib.cy, extra)
@@ -103,6 +100,10 @@ def main():
         "seed": spec.seed,
     }
     metrics["pipeline"] = result.diagnostics
+    if no_imu is not None:
+        metrics["pipeline_no_imu"] = no_imu.diagnostics
+        metrics["focal"]["bundle_adjusted_no_imu_px"] = no_imu.focal
+        metrics["focal"]["bundle_adjusted_no_imu_error_pct"] = 100.0 * (no_imu.focal - sim.calib.fx) / sim.calib.fx
     (args.out / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
     np.savez_compressed(
@@ -113,6 +114,7 @@ def main():
         chain=np.array(result.chained_rotations),
         ba=np.array(result.ba_rotations),
         v1=np.array(extra["v1_homography_chain"]) if extra else np.zeros(0),
+        ba_no_imu=np.array(no_imu.rotations) if no_imu is not None else np.zeros(0),
         focal_true=sim.calib.fx, focal_init=result.focal_initial, focal_ba=result.focal_ba,
         cx=sim.calib.cx, cy=sim.calib.cy,
         pair_ij=np.array([[p.i, p.j] for p in result.pairs if p.success]),
@@ -129,7 +131,8 @@ def main():
 
     print("\nRotation error against ground truth (degrees), simulated data")
     print(f"{'method':24s} {'mean':>7s} {'median':>7s} {'max':>7s} {'last':>7s} {'end-start':>9s} {'reproj px':>9s}")
-    for name in ["imu_only", "v1_homography_chain", "pairwise_chain", "bundle_adjusted"]:
+    for name in ["imu_only", "v1_homography_chain", "pairwise_chain", "bundle_adjusted",
+                 "bundle_adjusted_no_imu"]:
         if name not in metrics:
             continue
         m = metrics[name]
@@ -138,7 +141,9 @@ def main():
     fm = metrics["focal"]
     print(f"focal: true {fm['true_px']:.1f}px, start {fm['initial_px']:.1f}px "
           f"({fm['initial_error_pct']:+.2f}%), after BA {fm['bundle_adjusted_px']:.1f}px "
-          f"({fm['bundle_adjusted_error_pct']:+.3f}%)")
+          f"({fm['bundle_adjusted_error_pct']:+.3f}%)"
+          + (f", after BA without gyro {fm['bundle_adjusted_no_imu_px']:.1f}px "
+             f"({fm['bundle_adjusted_no_imu_error_pct']:+.3f}%)" if no_imu is not None else ""))
     print(f"Wrote {args.out}")
 
 

@@ -64,6 +64,7 @@ class SweepSpec:
     gyro_bias_walk_dps_rt_s: float = 0.02  # bias random walk, deg/s/sqrt(s)
     gyro_noise_dps_rt_hz: float = 0.01     # white noise density, deg/s/sqrt(Hz)
     gyro_scale_error: float = 0.005    # scale-factor error (fraction)
+    gyro_pad_s: float = 0.0            # extra gyro log before and after the frames (camera at rest)
     seed: int = 7
 
 
@@ -116,7 +117,7 @@ def simulate_gyro(spec: SweepSpec, rng: np.random.Generator):
     Returns (GyroLog of measurements, true bias per sample).
     """
     dt = 1.0 / spec.gyro_rate_hz
-    t = np.arange(0.0, spec.duration_s + dt / 2, dt)
+    t = np.arange(-spec.gyro_pad_s, spec.duration_s + spec.gyro_pad_s + dt / 2, dt)
     w_true = body_rates(spec, t)
 
     bias0 = rng.normal(size=3)

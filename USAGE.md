@@ -195,6 +195,79 @@ The pipeline tries to extract FOV from EXIF first, only uses `hfov_deg` as fallb
 }
 ```
 
+### Orientation
+
+How each frame's orientation is worked out.
+
+```yaml
+orientation:
+  method: bundle                 # bundle (default) or chain (v1)
+  optimize_focal: true           # bundle: refine the focal length with the rotations
+  ransac_threshold_px: 2.0       # bundle: rotation-only RANSAC threshold (match resolution)
+  min_inliers: 30                # bundle: inliers a frame pair needs to count
+  max_pair_gap: 3                # bundle: always match each frame with the next 3
+  long_pairs_per_frame: 1        # bundle: extra pair per frame, ~half a field of view away
+  loop_pairs_per_frame: 2        # bundle: loop-closure pairs per frame
+  chain_drift_deg_per_frame: 0.1 # bundle, no gyro: assumed chain drift (widens the search)
+  gyro_drift_deg_per_s: 0.5      # bundle, gyro: assumed gyro drift (widens the search)
+```
+
+- **`chain`** is v1: a homography per adjacent pair, chained, then smoothed by
+  `rotation_smoothing_window`. Errors add up along the sweep, and a sweep that comes back
+  round is trimmed or squeezed rather than closed.
+- **`bundle`** (default) matches many more pairs: neighbours, frames about half a field of view
+  apart, and frames at the end of the sweep against the start. A rotation-only model is
+  fitted to each pair; rotation averaging then makes every pair agree, and bundle
+  adjustment refines all rotations and one focal length against the pixels. Smoothing is
+  not applied. A first guess (the prior) is needed to know which frames overlap: the
+  gyroscope when `imu.gyro_csv` is set, otherwise the v1 chain.
+
+With `bundle`, the run also writes `orientation.json` (pairs, residuals, focal, sweep),
+`orientation.npz` (rotations and verified correspondences) and `intrinsics_refined.json`,
+which you can pass as `intrinsics.calib_json` to start later runs from the refined focal.
+
+**Focal length.** A rotation-only fit scales every angle by true/assumed focal, so a
+focal length 10% off makes a 330° sweep read 360°. `bundle` searches for the focal at
+which all pairs agree before averaging them:
+
+- When the sweep comes back round, loop-closure pairs pin it down sharply, and bundle
+  adjustment refines it further.
+- When it does not, the minimum is shallow on phone video, so the starting focal is
+  kept unless the pairs clearly prefer another, and it is held fixed in bundle
+  adjustment. The run warns about this.
+
+The reliable route is to **calibrate once**: shoot a sweep that comes back past its
+start, run it with `bundle`, and pass its `intrinsics_refined.json` as `calib_json` for
+other captures from the same phone, lens and video mode. Phone video stabilisation crops
+the frame, so the focal length rarely matches the 35 mm-equivalent figure in the file's
+metadata.
+
+### Gyroscope (optional)
+
+A gyro log recorded alongside the video becomes the prior for `orientation.method: bundle`.
+
+```yaml
+imu:
+  gyro_csv: ./gyro.csv           # needs orientation.method: bundle
+  gyro_units: rad/s              # or deg/s
+  time_offset_s: auto            # gyro_time = video_time + offset; auto = estimate
+  axes: auto                     # e.g. [x, -y, -z]; auto = estimate
+  frame_times_csv: null          # only for image folders; video input writes it
+```
+
+- **CSV format:** a header row, a time column (`t`, `time_s`, `seconds_elapsed`, `time` or
+  `timestamp`, in s, ms, µs or ns: the unit is read from the sample spacing) and three
+  rate columns (`wx`/`x`/`gx`/`gyro_x`/`rotationRateX` and so on). Exports from phone
+  sensor-logger apps load as they are.
+- **Clock offset:** found by lining up how fast the camera turned according to the gyro
+  with how fast it turned according to adjacent frames. The run logs the correlation;
+  below 0.8 the log probably does not belong to this video.
+- **Axes:** fitted from the same frame intervals and snapped to the nearest axis
+  permutation. `[x, -y, -z]` is a phone's rear camera with the video upright, in the
+  iOS/Android device frame.
+- **Frame times:** video input writes `frames/frame_times.csv` with each frame's
+  presentation time. For a folder of images, give `frame_times_csv` (columns `file,time_s`).
+
 ### Blending
 
 ```yaml
@@ -364,6 +437,10 @@ output/
 ├── panorama.jpg           # Final equirectangular panorama
 ├── config.json            # Pipeline configuration used
 ├── intrinsics.json        # Camera intrinsics report
+├── orientation.npz        # Rotations used for the warp (+ BA data with method: bundle)
+├── orientation.json       # method: bundle only — pairs, residuals, focal, sweep
+├── intrinsics_refined.json # method: bundle only — the refined focal as a calibration file
+├── frames/                # video input only: extracted frames + frame_times.csv
 ├── viewer/
 │   ├── index.html         # Interactive 360° viewer
 │   └── panorama.jpg       # Copy of panorama

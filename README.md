@@ -27,6 +27,8 @@ Give it a video or a folder of stills. Each stage below is a module in [src/](sr
    because independent per-pair estimates leave a few tenths of a degree of pitch and
    roll error on every frame, which shows up as a staircase along any long straight
    edge. On the sample run it cuts pitch wobble 13.5× and roll wobble 5.2×.
+   Steps 4 and 5 are the v1 `chain` method; the default, `orientation.method: bundle`,
+   replaces them with a global solve (see [Bundle adjustment](#bundle-adjustment-with-or-without-a-gyroscope)).
 6. **Warp** — inverse-mapped to equirectangular: for each output pixel, take the world
    direction, rotate into each camera's frame, project, sample
    ([warp_sphere.py](src/warp_sphere.py)).
@@ -121,23 +123,69 @@ The demo site walks through the same run stage by stage, including a real ORB ma
 visualization and a wipe comparison of smoothing on versus off:
 **[360.ramikronbi.com](https://360.ramikronbi.com)**
 
-## v2: gyro prior and bundle adjustment (validated in simulation)
+## Bundle adjustment, with or without a gyroscope
 
-A second orientation path for captures that come with a gyroscope log. It is validated
-on simulated data only so far; `run.py` still uses the v1 path for real videos.
+`orientation.method: bundle`, the default, replaces the chained, smoothed rotations with
+a global solve ([orientation.py](src/orientation.py)). It runs on any video; a gyroscope
+log is optional. `method: chain` keeps the v1 path. If too few pairs match for a global
+solve, the run carries on with the prior's orientations and says so.
 
-1. **Gyro prior** — the gyro is integrated between frame timestamps to give every frame
-   a dead-reckoned orientation ([imu.py](src/imu.py)).
-2. **Pair selection** — adjacent and nearby pairs, plus any pair the prior says should
-   overlap. After a full turn that includes the last frames against the first ones: the
-   loop closures chaining never sees.
-3. **Guided matching** — ORB matches are only searched near where the prior predicts
-   each keypoint lands, and a rotation-only model (3 degrees of freedom, two-point
-   RANSAC on bearing vectors) replaces the homography ([guided_match.py](src/guided_match.py)).
-4. **Bundle adjustment** — every rotation and one shared focal length solved together
-   over all pairs, with a soft-L1 loss, starting from the gyro prior
+1. **Prior** — a first guess at every frame's orientation. With a gyro log, the gyro
+   integrated between frame timestamps ([imu.py](src/imu.py)); the clock offset and the
+   gyro-to-camera axes are worked out from the video itself. Without one, the v1
+   homography chain, unsmoothed, with the links it could not measure marked as doubtful.
+2. **Pair selection** — every frame against its next three, one pair about half a field
+   of view away, and the frames the sweep comes back to after going round: the loop
+   closures chaining never sees.
+3. **Guided matching** — ORB matches searched near where the prior predicts each keypoint
+   lands (falling back to the whole frame when the prior is off), then a rotation-only
+   model fitted by two-point RANSAC on bearing vectors ([guided_match.py](src/guided_match.py)).
+4. **Rotation averaging** — every frame's rotation made consistent with every pair at
+   once, dropping pairs that still disagree by more than 3°. This spreads the loop's
+   accumulated error over the whole sweep before any pixel is measured.
+5. **Bundle adjustment** — all rotations and one shared focal length refined against the
+   pixels of every pair, with a soft-L1 loss and an analytic Jacobian
    ([bundle_adjust.py](src/bundle_adjust.py)).
-5. **Warp and blend** — unchanged from v1.
+6. **Warp and blend** — unchanged, with the refined focal length. When loop-closure pairs
+   matched, the ends are aligned rather than squeezed apart.
+
+```yaml
+orientation:
+  method: bundle
+imu:                       # optional
+  gyro_csv: ./gyro.csv
+```
+
+[USAGE.md](USAGE.md#orientation) lists every option. A bundle run also writes
+`orientation.json`, `orientation.npz` and `intrinsics_refined.json`.
+
+### On real footage
+
+Two phone videos of the same room, without a gyro: `IMG_1480.MOV`, which comes back to
+its start, and the shorter demo clip `IMG_1480_2.MOV`, which stops just short of it.
+Errors are pixel transfer errors on verified correspondences that bundle adjustment did
+not fit ([compare_orientation.py](scripts/compare_orientation.py)):
+
+| Run                                                   |   Focal |  Sweep |     RMS | Loop pairs |
+| ----------------------------------------------------- | ------: | -----: | ------: | ---------: |
+| Full sweep, v1 chain (trimmed at the closure)         | 1475 px | 358.5° | 37.3 px |   323.7 px |
+| Full sweep, bundle adjusted (179 loop pairs)          | 1669 px | 359.7° |  1.8 px |     1.9 px |
+| Demo clip, v1 chain (squeezed apart)                  | 1475 px | 317.8° | 36.9 px |          – |
+| Demo clip, bundle adjusted, configured focal (squeezed) | 1475 px | 317.8° | 35.8 px |        – |
+| Demo clip, bundle adjusted, focal from the full sweep | 1669 px | 323.6° |  1.9 px |          – |
+
+On the full sweep the loop-closure pairs pin everything down, the focal length included:
+the configured 1475 px was 11.6% short (video stabilisation crops the frame). The demo
+clip has no loop, so its total angle depends on the focal length: with the wrong one,
+every pair still fits but the sweep reads 362.5° and has to be squeezed apart, as v1
+does. Started from the full sweep's `intrinsics_refined.json` it reads 323.6°, which is
+what the frames show. So calibrate once on a capture that comes back round, and reuse
+that focal length for the same phone and video mode.
+
+Each run takes about three minutes for ~300 full-resolution frames and stays under
+1.8 GB of memory.
+
+### In simulation, against ground truth
 
 The simulator ([simulate.py](src/simulate.py)) renders pinhole frames from an existing
 equirectangular image for a camera turning about its centre, and a 200 Hz gyro with
@@ -153,18 +201,19 @@ On the default run (73 frames, 396° of yaw, starting focal length 3.5% short):
 
 | Orientation source              | Mean error | Last frame | Reprojection RMS |
 | ------------------------------- | ---------: | ---------: | ---------------: |
-| Gyro only                       |      2.01° |      4.27° |          19.0 px |
-| Pairwise chain, v1 homography   |      1.35° |      2.09° |          14.8 px |
-| Pairwise chain, v2 rotation     |      6.13° |     12.21° |         100.1 px |
-| Bundle adjusted                 |      0.04° |      0.03° |          0.99 px |
+| Gyro only                       |      2.01° |      4.27° |          12.5 px |
+| Pairwise chain, v1 homography   |      0.50° |      0.66° |           5.4 px |
+| Pairwise chain, v2 rotation     |      6.13° |     12.21° |          62.4 px |
+| Bundle adjusted, gyro prior     |     0.024° |     0.018° |          0.98 px |
+| Bundle adjusted, no gyro        |     0.022° |     0.010° |          0.98 px |
 
-Bundle adjustment also recovers the focal length to within 0.02%. The rotation-only chain
-is the most sensitive to a wrong focal length, which is why the global solve matters
-more than the pairwise model: with the focal length exact, the same chain ends 0.12° off
-and bundle adjustment 0.02°.
+Both bundle-adjusted runs recover the focal length to within 0.04%. The rotation-only
+chain is the most sensitive to a wrong focal length; the global solve is what removes
+that sensitivity.
 
 Not simulated: parallax from camera translation, lens distortion, rolling shutter, motion
-blur, camera–gyro time offset and misalignment. Real captures will score worse.
+blur, camera–gyro misalignment beyond an axis permutation. The gyro path has not yet run
+on a real gyro log.
 
 ## Assumptions and limits
 
@@ -177,9 +226,12 @@ blur, camera–gyro time offset and misalignment. Real captures will score worse
 - **Texture drives the estimate.** Blank walls, blown highlights, and repeating patterns
   produce few usable inliers. The pipeline carries on by borrowing a neighbour's rotation
   rather than dropping the frame.
-- **No bundle adjustment on the v1 path, and no exposure matching.** Error accumulates
-  along the chain instead of being distributed around the loop, and frames keep their own
-  exposure. The v2 path above adds bundle adjustment, but needs a gyro log.
+- **The v1 `chain` method accumulates error.** The default `bundle` method spreads it
+  around the loop instead. Neither method matches exposure between frames.
+- **A sweep that stops short of the start cannot be closed.** Without frames that see
+  the start again, the images do not pin the focal length, so the total angle is only as
+  right as the configured one, and the ends are squeezed apart if they would overlap.
+  Calibrate the focal length once on a sweep that does come back round.
 
 ## Tests
 
@@ -187,15 +239,16 @@ blur, camera–gyro time offset and misalignment. Real captures will score worse
 python run_tests.py          # or: pytest -q
 ```
 
-More than 200 tests cover config, IO, intrinsics, feature matching, rotation, blending,
-and warping.
+Nearly 300 tests cover config, IO, intrinsics, feature matching, rotation, blending,
+warping, and the bundle-adjustment path end to end on rendered sweeps, with and without a
+gyro log.
 
 ## Repository layout
 
 ```
 run.py            entry point: load config, extract frames, run the pipeline
-run_sim.py        v2 validation on a simulated sweep with ground truth
-scripts/          media for the v2 simulation (figures, video)
+run_sim.py        both orientation methods on a simulated sweep, scored against ground truth
+scripts/          media for the simulation; compare_orientation.py scores real runs
 src/pipeline.py   the eight stages, in order, with logging
 src/              one module per stage (see "How it works")
 tests/            pytest suite

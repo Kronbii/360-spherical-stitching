@@ -41,9 +41,16 @@ class BundleResult:
     n_pairs: int
     cost_history: dict = field(default_factory=dict)
     success: bool = True
+    observations_used: dict = field(default_factory=dict)  # (i, j) -> indices into that pair's points
 
 
-def _gather_observations(pairs: List[PairMatch], max_per_pair: int, seed: int):
+def _gather_observations(pairs: List[PairMatch], max_per_pair: int, seed: int, chosen=None):
+    """
+    Correspondences for the solve: up to max_per_pair per successful pair, sampled.
+
+    When chosen is a dict, the sampled indices of each pair are recorded in it under
+    (i, j), so callers can tell which correspondences the solve never saw.
+    """
     rng = np.random.default_rng(seed)
     cam_i, cam_j, pi, pj = [], [], [], []
     used = 0
@@ -53,6 +60,8 @@ def _gather_observations(pairs: List[PairMatch], max_per_pair: int, seed: int):
         idx = np.arange(len(p.pts_i))
         if len(idx) > max_per_pair:
             idx = rng.choice(idx, max_per_pair, replace=False)
+        if chosen is not None:
+            chosen[(p.i, p.j)] = idx
         cam_i.append(np.full(len(idx), p.i))
         cam_j.append(np.full(len(idx), p.j))
         pi.append(p.pts_i[idx])
@@ -95,6 +104,97 @@ def transfer_residuals(
     fwd = transfer(R_rel, pts_i, pts_j)
     bwd = transfer(np.transpose(R_rel, (0, 2, 1)), pts_j, pts_i)
     return np.concatenate([fwd, bwd])
+
+
+def _skew_batch(v: np.ndarray) -> np.ndarray:
+    """[v]x for each row of v, shape (N, 3, 3)."""
+    S = np.zeros((len(v), 3, 3))
+    S[:, 0, 1], S[:, 0, 2] = -v[:, 2], v[:, 1]
+    S[:, 1, 0], S[:, 1, 2] = v[:, 2], -v[:, 0]
+    S[:, 2, 0], S[:, 2, 1] = -v[:, 1], v[:, 0]
+    return S
+
+
+def left_jacobians(phi: np.ndarray) -> np.ndarray:
+    """
+    Left Jacobian of SO(3) for each rotation vector: exp(phi + d) ≈ exp(J_l d) exp(phi).
+    """
+    theta = np.linalg.norm(phi, axis=1)
+    S = _skew_batch(phi)
+    small = theta < 1e-6
+    t = np.where(small, 1.0, theta)
+    a = np.where(small, 0.5, (1.0 - np.cos(t)) / t ** 2)
+    b = np.where(small, 1.0 / 6.0, (t - np.sin(t)) / t ** 3)
+    return np.eye(3)[None] + a[:, None, None] * S + b[:, None, None] * (S @ S)
+
+
+def transfer_jacobian(
+    rotations: np.ndarray,
+    jl: np.ndarray,
+    focal: float,
+    cx: float,
+    cy: float,
+    cam_i: np.ndarray,
+    cam_j: np.ndarray,
+    pts_i: np.ndarray,
+    pts_j: np.ndarray,
+    optimize_focal: bool,
+):
+    """
+    Analytic Jacobian of transfer_residuals.
+
+    Parameters are a rotation vector per camera 1..N-1 (applied on the left of that
+    camera's starting rotation, so jl holds each camera's left Jacobian, zero for the
+    fixed camera 0) and, optionally, log(focal) as the last column.
+
+    For a transfer r = R_dst R_srcᵀ u with u = K⁻¹x_src:
+        ∂r/∂φ_dst = -[r]x J_l(φ_dst)
+        ∂r/∂φ_src = R_dst R_srcᵀ [u]x J_l(φ_src)
+        ∂r/∂log f = R_dst R_srcᵀ (-u_x, -u_y, 0)
+    and the pixel is p = f r_xy / r_z + c.
+
+    Returns:
+        (rows, cols, values) of the non-zero entries, in transfer_residuals' row order.
+    """
+    m = len(cam_i)
+    R_rel = np.einsum("nab,ncb->nac", rotations[cam_j], rotations[cam_i])
+    rows, cols, vals = [], [], []
+    n_rot = 3 * (len(rotations) - 1)
+    obs = np.arange(m)
+
+    for direction, (Rr, src, dst, pts) in enumerate((
+            (R_rel, cam_i, cam_j, pts_i),
+            (np.transpose(R_rel, (0, 2, 1)), cam_j, cam_i, pts_j))):
+        u = np.stack([(pts[:, 0] - cx) / focal, (pts[:, 1] - cy) / focal, np.ones(m)], axis=1)
+        r = np.einsum("nab,nb->na", Rr, u)
+        z = np.where(np.abs(r[:, 2]) < 1e-6, 1e-6, r[:, 2])
+        # dp/dr, shape (m, 2, 3)
+        P = np.zeros((m, 2, 3))
+        P[:, 0, 0] = focal / z
+        P[:, 1, 1] = focal / z
+        P[:, 0, 2] = -focal * r[:, 0] / z ** 2
+        P[:, 1, 2] = -focal * r[:, 1] / z ** 2
+
+        d_dst = P @ (-_skew_batch(r) @ jl[dst])
+        d_src = P @ (Rr @ _skew_batch(u) @ jl[src])
+        if optimize_focal:
+            dr_df = np.einsum("nab,nb->na", Rr, np.stack([-u[:, 0], -u[:, 1], np.zeros(m)], 1))
+            d_f = focal * r[:, :2] / z[:, None] + np.einsum("nab,nb->na", P, dr_df)
+
+        for comp in range(2):
+            row = (2 * direction + comp) * m + obs
+            for cams, D in ((dst, d_dst), (src, d_src)):
+                moving = cams > 0
+                for k in range(3):
+                    rows.append(row[moving])
+                    cols.append(3 * (cams[moving] - 1) + k)
+                    vals.append(D[moving, comp, k])
+            if optimize_focal:
+                rows.append(row)
+                cols.append(np.full(m, n_rot))
+                vals.append(d_f[:, comp])
+
+    return np.concatenate(rows), np.concatenate(cols), np.concatenate(vals)
 
 
 def reprojection_rms(
@@ -145,7 +245,8 @@ def bundle_adjust(
         BundleResult with refined rotations (frame 0 unchanged) and focal length.
     """
     n = len(initial_rotations)
-    ci, cj, pi, pj, used_pairs = _gather_observations(pairs, max_per_pair, seed)
+    chosen = {}
+    ci, cj, pi, pj, used_pairs = _gather_observations(pairs, max_per_pair, seed, chosen)
     m = len(ci)
     R0 = np.asarray(initial_rotations, dtype=np.float64)
     R_fixed = R0[0]
@@ -165,23 +266,12 @@ def bundle_adjust(
         rots, f = unpack(x)
         return transfer_residuals(rots, f, cx, cy, ci, cj, pi, pj)
 
-    # Each residual touches two cameras (and the focal length)
-    sp_rows, sp_cols = [], []
-    rows = np.arange(m)
-    for block in range(4):
-        r = rows + block * m
-        for cams in (ci, cj):
-            moving = cams > 0
-            for k in range(3):
-                sp_rows.append(r[moving])
-                sp_cols.append(3 * (cams[moving] - 1) + k)
-        if optimize_focal:
-            sp_rows.append(r)
-            sp_cols.append(np.full(m, n_rot))
-    sp_rows, sp_cols = np.concatenate(sp_rows), np.concatenate(sp_cols)
-    sparsity = coo_matrix((np.ones(len(sp_rows), np.uint8), (sp_rows, sp_cols)),
-                          shape=(4 * m, n_params)).tocsr()
-    sparsity.data[:] = 1
+    def jac(x):
+        rots, f = unpack(x)
+        jl = np.zeros((n, 3, 3))
+        jl[1:] = left_jacobians(x[:n_rot].reshape(-1, 3))
+        rows, cols, vals = transfer_jacobian(rots, jl, f, cx, cy, ci, cj, pi, pj, optimize_focal)
+        return coo_matrix((vals, (rows, cols)), shape=(4 * m, n_params)).tocsr()
 
     x0 = np.zeros(n_params)
     r0 = fun(x0)
@@ -190,7 +280,7 @@ def bundle_adjust(
                 f"initial RMS {rms_before:.2f}px")
 
     result = least_squares(
-        fun, x0, jac_sparsity=sparsity, method="trf", loss=loss,
+        fun, x0, jac=jac, method="trf", loss=loss, tr_solver="lsmr",
         f_scale=loss_scale_px, x_scale="jac", max_nfev=max_nfev, verbose=0,
     )
     rots, f = unpack(result.x)
@@ -210,4 +300,5 @@ def bundle_adjust(
         cost_history={"initial_cost": float(0.5 * np.sum(r0 ** 2)), "final_cost": float(result.cost),
                       "nfev": int(result.nfev)},
         success=bool(result.success),
+        observations_used=chosen,
     )

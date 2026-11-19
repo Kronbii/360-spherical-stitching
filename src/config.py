@@ -67,6 +67,30 @@ class DebugConfig:
 
 
 @dataclass
+class OrientationConfig:
+    """How frame orientations are estimated."""
+    method: str = "bundle"  # 'bundle' (loop closures, rotation averaging, bundle adjustment) or 'chain' (v1)
+    optimize_focal: bool = True  # bundle: solve one shared focal length along with the rotations
+    ransac_threshold_px: float = 2.0  # bundle: rotation-only RANSAC threshold at match resolution
+    min_inliers: int = 30  # bundle: inliers a pair needs to be used
+    max_pair_gap: int = 3  # bundle: always match (i, i+1) .. (i, i+gap)
+    long_pairs_per_frame: int = 1  # bundle: extra pairs ~half a field of view apart, per frame
+    loop_pairs_per_frame: int = 2  # bundle: loop-closure pairs per frame
+    chain_drift_deg_per_frame: float = 0.1  # bundle without gyro: assumed chain drift, widens search
+    gyro_drift_deg_per_s: float = 0.5  # bundle with gyro: assumed gyro drift, widens search
+
+
+@dataclass
+class ImuConfig:
+    """Optional gyroscope log, used as the prior for method 'bundle'."""
+    gyro_csv: Optional[Path] = None  # CSV with a time column and three angular-rate columns
+    gyro_units: str = "rad/s"  # 'rad/s' or 'deg/s'
+    frame_times_csv: Optional[Path] = None  # file,time_s per frame; written automatically for video input
+    time_offset_s: Optional[float] = None  # gyro_time = video_time + offset; None = estimate from the video
+    axes: Optional[list] = None  # gyro axis per camera axis, e.g. [x, -y, -z]; None = estimate
+
+
+@dataclass
 class VideoExtractionConfig:
     """Configuration for video frame extraction."""
     method: str = "uniform"  # 'uniform', 'interval', 'fps', or 'motion'
@@ -89,6 +113,8 @@ class PipelineConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     video_extraction: VideoExtractionConfig = field(default_factory=VideoExtractionConfig)
+    orientation: OrientationConfig = field(default_factory=OrientationConfig)
+    imu: ImuConfig = field(default_factory=ImuConfig)
     
     def __post_init__(self):
         """Convert paths to Path objects if needed."""
@@ -98,6 +124,14 @@ class PipelineConfig:
             self.output_dir = Path(self.output_dir)
         if self.intrinsics.calib_json and isinstance(self.intrinsics.calib_json, str):
             self.intrinsics.calib_json = Path(self.intrinsics.calib_json)
+        for name in ("gyro_csv", "frame_times_csv"):
+            value = getattr(self.imu, name)
+            if value and isinstance(value, str):
+                setattr(self.imu, name, Path(value))
+        if self.orientation.method not in ("chain", "bundle"):
+            raise ValueError(f"orientation.method must be 'chain' or 'bundle', got {self.orientation.method!r}")
+        if self.imu.gyro_csv and self.orientation.method != "bundle":
+            raise ValueError("A gyro log is only used by orientation.method 'bundle'")
     
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for logging/saving."""
@@ -146,6 +180,24 @@ class PipelineConfig:
                 "min_frames": self.video_extraction.min_frames,
                 "max_frames": self.video_extraction.max_frames,
                 "motion_threshold": self.video_extraction.motion_threshold,
+            },
+            "orientation": {
+                "method": self.orientation.method,
+                "optimize_focal": self.orientation.optimize_focal,
+                "ransac_threshold_px": self.orientation.ransac_threshold_px,
+                "min_inliers": self.orientation.min_inliers,
+                "max_pair_gap": self.orientation.max_pair_gap,
+                "long_pairs_per_frame": self.orientation.long_pairs_per_frame,
+                "loop_pairs_per_frame": self.orientation.loop_pairs_per_frame,
+                "chain_drift_deg_per_frame": self.orientation.chain_drift_deg_per_frame,
+                "gyro_drift_deg_per_s": self.orientation.gyro_drift_deg_per_s,
+            },
+            "imu": {
+                "gyro_csv": str(self.imu.gyro_csv) if self.imu.gyro_csv else None,
+                "gyro_units": self.imu.gyro_units,
+                "frame_times_csv": str(self.imu.frame_times_csv) if self.imu.frame_times_csv else None,
+                "time_offset_s": self.imu.time_offset_s,
+                "axes": self.imu.axes,
             },
         }
 
@@ -206,6 +258,8 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
     output_data = data.get('output', {})
     debug_data = data.get('debug', {})
     video_extraction_data = data.get('video_extraction', {})
+    orientation_data = data.get('orientation', {}) or {}
+    imu_data = data.get('imu', {}) or {}
     
     # Build config objects
     matching = MatchingConfig(
@@ -261,6 +315,29 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         motion_threshold=video_extraction_data.get('motion_threshold', 0.02),
     )
     
+    defaults = OrientationConfig()
+    orientation = OrientationConfig(**{
+        name: orientation_data.get(name, getattr(defaults, name))
+        for name in OrientationConfig.__dataclass_fields__
+    })
+    unknown = set(orientation_data) - set(OrientationConfig.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"Unknown orientation option(s): {', '.join(sorted(unknown))}")
+
+    offset = imu_data.get('time_offset_s')
+    if isinstance(offset, str) and offset.strip().lower() == 'auto':
+        offset = None
+    axes = imu_data.get('axes')
+    if isinstance(axes, str):
+        axes = None if axes.strip().lower() == 'auto' else [a.strip() for a in axes.split(',')]
+    imu = ImuConfig(
+        gyro_csv=Path(imu_data['gyro_csv']) if imu_data.get('gyro_csv') else None,
+        gyro_units=imu_data.get('gyro_units', 'rad/s'),
+        frame_times_csv=Path(imu_data['frame_times_csv']) if imu_data.get('frame_times_csv') else None,
+        time_offset_s=float(offset) if offset is not None else None,
+        axes=list(axes) if axes else None,
+    )
+
     config = PipelineConfig(
         input_dir=input_dir,
         output_dir=output_dir,
@@ -270,6 +347,8 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         output=output,
         debug=debug,
         video_extraction=video_extraction,
+        orientation=orientation,
+        imu=imu,
     )
     
     # Store video path if specified (for later use)

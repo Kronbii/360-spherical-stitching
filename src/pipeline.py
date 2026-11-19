@@ -17,7 +17,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -45,6 +45,7 @@ from .io_utils import (
     sort_images_robustly,
     get_image_dimensions,
     ImageInfo,
+    LazyImages,
 )
 from .rotation import (
     chain_rotations,
@@ -57,6 +58,21 @@ from .circular_match import (
     head_tail_overlap,
     trim_excess_frames,
 )
+from .imu import integrate_gyro, load_frame_times, load_gyro_csv, parse_axes
+from .orientation import (
+    OrientationOptions,
+    OrientationResult,
+    calibrate_gyro,
+    detect_all_features,
+    estimate_orientation,
+    gyro_prior,
+    homography_chain_prior,
+    is_loop_pair,
+    rotation_report,
+    unwrapped_heading_deg,
+)
+from .guided_match import draw_pair
+from .video_utils import FRAME_TIMES_FILENAME
 from .warp_sphere import (
     estimate_panorama_coverage,
     save_debug_warps,
@@ -287,6 +303,317 @@ def generate_viewer_html(viewer_dir: Path, panorama_filename: str) -> None:
         f.write(html_content)
 
 
+def orient_with_chain(
+    config: PipelineConfig,
+    match_images: List[np.ndarray],
+    image_infos: List[ImageInfo],
+    calib: CalibrationData,
+    K_match: np.ndarray,
+    match_scale: float,
+) -> Tuple[List[np.ndarray], List[np.ndarray], List[ImageInfo]]:
+    """
+    v1 orientation: homography per adjacent pair, chained, smoothed, wrap-guarded.
+
+    Returns:
+        (global rotations, match images, image infos). The last two are shorter than
+        the inputs when a circular closure trimmed the tail.
+    """
+    logger.info("\n[STEP 4] Matching features between adjacent images...")
+
+    match_results = match_sequential_pairs(
+        match_images,
+        config.matching,
+        scale=match_scale
+    )
+
+    # Check matching quality
+    success, message = check_matching_quality(match_results, config.matching.min_inliers)
+    if not success:
+        failed_count = sum(1 for r in match_results if not r.success)
+        total_pairs = len(match_results)
+        success_rate = (total_pairs - failed_count) / total_pairs * 100
+
+        logger.warning(f"Some pairs failed to match ({failed_count}/{total_pairs}, {success_rate:.1f}% success rate)")
+        logger.warning("Continuing with identity rotations for failed pairs...")
+        logger.warning(message)
+
+        # Save debug visualizations for failed matches
+        if config.debug.enabled:
+            for result in match_results:
+                if not result.success:
+                    vis_path = config.output_dir / "debug" / "matches" / f"match_{result.src_idx}_{result.dst_idx}.jpg"
+                    save_match_visualization(
+                        match_images[result.src_idx],
+                        match_images[result.dst_idx],
+                        result,
+                        vis_path
+                    )
+        # Don't fail - the rotation computation interpolates failed pairs
+
+    # Save match visualizations if debug enabled
+    if config.debug.enabled and config.debug.save_matches:
+        for result in match_results:
+            vis_path = config.output_dir / "debug" / "matches" / f"match_{result.src_idx}_{result.dst_idx}.jpg"
+            save_match_visualization(
+                match_images[result.src_idx],
+                match_images[result.dst_idx],
+                result,
+                vis_path
+            )
+
+    logger.info("\n[STEP 5] Computing rotations from homographies...")
+
+    relative_rotations, rotation_diags = compute_relative_rotations(
+        match_results,
+        K_match,
+        scale_factor=1.0  # Already at match scale
+    )
+
+    global_rotations = chain_rotations(
+        relative_rotations,
+        apply_smoothing=config.matching.rotation_smoothing_window > 1,
+        smoothing_window=config.matching.rotation_smoothing_window
+    )
+    log_rotation_summary(global_rotations, rotation_diags)
+
+    # Detect and trim circular closure (if >360° captured)
+    if config.matching.disable_circular_closure:
+        logger.info("Circular closure detection is disabled")
+        trim_idx = None
+    else:
+        trim_idx = detect_circular_closure(
+            match_images,
+            match_results,
+            global_rotations,
+            config.matching,
+            scale=match_scale
+        )
+
+        if trim_idx is not None and trim_idx < len(image_infos) - 1:
+            match_images, image_infos, match_results, global_rotations = trim_excess_frames(
+                match_images,
+                image_infos,
+                match_results,
+                global_rotations,
+                trim_idx
+            )
+            logger.info(f"Circular closure detected: trimmed to {len(image_infos)} frames")
+
+    # Keep the sweep from wrapping onto itself. A chain that over-estimates can report
+    # enough yaw to close the circle even when the camera never came back round. The
+    # warp would then drop the last frames onto the same arc as the first ones and paint
+    # unrelated content over them. Trimming already handled the case where the frames
+    # genuinely do overlap; anything left is drift.
+    hfov_deg = 2.0 * np.degrees(np.arctan(calib.K[0, 2] / calib.K[0, 0]))
+    collision = head_tail_overlap(match_images, global_rotations, hfov_deg)
+    if trim_idx is None and collision is not None:
+        first, last = collision
+        logger.warning(f"Frames {first}-{last} would land on the first frame's arc")
+        global_rotations, _ = enforce_open_sweep(global_rotations, hfov_deg)
+    elif collision is not None:
+        logger.info("Wrap overlap resolved by trimming at the closure point")
+
+    save_orientation(config.output_dir, "chain", global_rotations, calib.fx)
+    return global_rotations, match_images, image_infos
+
+
+def orientation_options(config: PipelineConfig) -> OrientationOptions:
+    """Shared orientation-stage settings from the pipeline config."""
+    o = config.orientation
+    return OrientationOptions(
+        orb_nfeatures=config.matching.orb_nfeatures,
+        ransac_threshold_px=o.ransac_threshold_px,
+        min_inliers=o.min_inliers,
+        max_pair_gap_local=o.max_pair_gap,
+        long_pairs_per_frame=o.long_pairs_per_frame,
+        loop_pairs_per_frame=o.loop_pairs_per_frame,
+        chain_drift_deg_per_link=o.chain_drift_deg_per_frame,
+        gyro_drift_deg_per_s=o.gyro_drift_deg_per_s,
+        optimize_focal=o.optimize_focal,
+    )
+
+
+def frame_times_for(config: PipelineConfig, image_infos: List[ImageInfo]) -> np.ndarray:
+    """Timestamps of the frames being stitched, in processing order."""
+    path = config.imu.frame_times_csv or (config.input_dir / FRAME_TIMES_FILENAME)
+    if not Path(path).exists():
+        raise PanoramaStitchingError(
+            f"A gyro log needs frame timestamps, and {path} does not exist. Video input writes it "
+            f"automatically; for a folder of images set imu.frame_times_csv."
+        )
+    times = load_frame_times(path, [info.path.name for info in image_infos])
+    if np.any(np.diff(times) <= 0):
+        raise PanoramaStitchingError(
+            "Frame timestamps are not increasing in the order the frames are processed; "
+            "check that frame file names sort in capture order."
+        )
+    return times
+
+
+def orient_with_bundle_adjustment(
+    config: PipelineConfig,
+    image_infos: List[ImageInfo],
+    match_images: List[np.ndarray],
+    K_match: np.ndarray,
+    match_scale: float,
+) -> Tuple[List[np.ndarray], float]:
+    """
+    Orientation by rotation averaging and bundle adjustment over many frame pairs.
+
+    The prior is the gyroscope when a log is configured, otherwise the v1 homography
+    chain (unsmoothed). Loop closures are matched explicitly, so a sweep that comes back
+    round is closed by the images rather than squeezed.
+
+    Returns:
+        (global rotations, refined focal / starting focal).
+    """
+    options = orientation_options(config)
+    h, w = match_images[0].shape[:2]
+    gyro_report = None
+
+    if config.imu.gyro_csv:
+        logger.info("\n[STEP 4] Orientation prior from the gyroscope...")
+        frame_times = frame_times_for(config, image_infos)
+        gyro_raw = load_gyro_csv(config.imu.gyro_csv, config.imu.gyro_units)
+        features = detect_all_features(match_images, options.orb_nfeatures, options.workers)
+        R_cam_imu = parse_axes(config.imu.axes) if config.imu.axes else None
+        gyro_cam, gyro_report = calibrate_gyro(features, K_match, frame_times, gyro_raw, options,
+                                               config.imu.time_offset_s, R_cam_imu)
+        prior = gyro_prior(integrate_gyro(gyro_cam, frame_times, np.eye(3)), frame_times,
+                           options.gyro_drift_deg_per_s)
+    else:
+        logger.info("\n[STEP 4] Orientation prior from the v1 homography chain (no gyro log)...")
+        prior = homography_chain_prior(match_images, K_match, config.matching,
+                                       options.chain_drift_deg_per_link, scale=match_scale)
+        features = detect_all_features(match_images, options.orb_nfeatures, options.workers)
+
+    if config.matching.rotation_smoothing_window > 1:
+        logger.info("Bundle adjustment removes chain jitter at its source; "
+                    "rotation_smoothing_window is not applied")
+
+    logger.info("\n[STEP 5] Rotation averaging and bundle adjustment...")
+    try:
+        result = estimate_orientation(features, K_match, (w, h), prior, options)
+    except ValueError as e:
+        # Too little texture for the rotation-only matcher: keep going on the prior, as
+        # the chain method would, rather than stopping a run it could finish
+        logger.warning(f"Bundle adjustment could not run ({e}); using the {prior.source} orientations as they are")
+        rotations = prior.rotations
+        hfov_deg = 2.0 * np.degrees(np.arctan(K_match[0, 2] / K_match[0, 0]))
+        if head_tail_overlap(match_images, rotations, hfov_deg) is not None:
+            rotations, _ = enforce_open_sweep(rotations, hfov_deg)
+        save_orientation(config.output_dir, f"bundle fell back to {prior.source}", rotations,
+                         K_match[0, 0] / match_scale)
+        return rotations, 1.0
+
+    if config.debug.enabled and config.debug.save_matches:
+        save_bundle_match_visualizations(config.output_dir, match_images, result)
+
+    global_rotations = result.rotations
+    focal_ratio = result.focal / K_match[0, 0]
+    focal_full = result.focal / match_scale
+
+    if result.diagnostics["n_loop_pairs"] > 0:
+        logger.info(f"Loop closed by {result.diagnostics['n_loop_pairs']} matched pairs; "
+                    f"frames past the start overlap it by design, no wrap correction needed")
+    else:
+        hfov_deg = 2.0 * np.degrees(np.arctan(K_match[0, 2] / result.focal))
+        collision = head_tail_overlap(match_images, global_rotations, hfov_deg)
+        if collision is not None:
+            logger.warning(f"Frames {collision[0]}-{collision[1]} would land on the first frame's arc "
+                           f"and no loop-closure pair confirms they belong there")
+            global_rotations, _ = enforce_open_sweep(global_rotations, hfov_deg)
+
+    report = rotation_report(result)
+    report["focal_full_res_px"] = focal_full
+    report["match_scale"] = match_scale
+    if gyro_report:
+        report["gyro_calibration"] = gyro_report
+    with open(config.output_dir / "orientation.json", "w") as f:
+        json.dump(report, f, indent=2)
+
+    # The refined focal length as a calibration file, so later runs can start from it
+    cx_full, cy_full = K_match[0, 2] / match_scale, K_match[1, 2] / match_scale
+    search = result.diagnostics.get("focal_search", {})
+    how = ("bundle adjustment, loop closed" if result.diagnostics["n_loop_pairs"] > 0
+           else f"no loop closure: {search.get('decision', 'focal not refined')}")
+    refined = CalibrationData(fx=focal_full, fy=focal_full, cx=cx_full, cy=cy_full,
+                              dist_coeffs=None, source=how)
+    with open(config.output_dir / "intrinsics_refined.json", "w") as f:
+        json.dump(refined.to_dict(), f, indent=2)
+
+    save_orientation(config.output_dir, "bundle", global_rotations, focal_full, result, match_scale)
+    return global_rotations, focal_ratio
+
+
+def save_bundle_match_visualizations(output_dir: Path, images, result: OrientationResult) -> None:
+    """
+    Debug images of the pairs bundle adjustment used: every neighbouring pair as
+    match_i_j.jpg, and every loop-closure pair as loop_i_j.jpg.
+    """
+    heading = unwrapped_heading_deg(result.rotations)
+    out = output_dir / "debug" / "matches"
+    out.mkdir(parents=True, exist_ok=True)
+    saved = 0
+    for p in result.used_pairs:
+        loop = is_loop_pair(heading, p.i, p.j)
+        if p.j != p.i + 1 and not loop:
+            continue
+        name = f"{'loop' if loop else 'match'}_{p.i}_{p.j}.jpg"
+        cv2.imwrite(str(out / name), draw_pair(images[p.i], images[p.j], p))
+        saved += 1
+    logger.info(f"Saved {saved} pair visualizations to {out}")
+
+
+def save_orientation(
+    output_dir: Path,
+    method: str,
+    rotations: List[np.ndarray],
+    focal_full_px: float,
+    result: Optional[OrientationResult] = None,
+    match_scale: float = 1.0,
+    max_points_per_pair: int = 150,
+) -> None:
+    """
+    Write orientation.npz: the rotations the warp used, the focal length, and for bundle
+    adjustment its prior, averaged orientations and a sample of verified correspondences
+    (full-resolution pixels) that the solve itself never saw, so runs can be compared
+    afterwards on held-out data.
+    """
+    data = {"method": method, "rotations": np.asarray(rotations), "focal_px": focal_full_px}
+    if result is not None:
+        rng = np.random.default_rng(0)
+        seen = result.bundle.observations_used
+        ij, pi, pj, counts = [], [], [], []
+        for p in result.used_pairs:
+            k = np.setdiff1d(np.arange(len(p.pts_i)), seen.get((p.i, p.j), []))
+            if len(k) == 0:
+                continue
+            if len(k) > max_points_per_pair:
+                k = rng.choice(k, max_points_per_pair, replace=False)
+            ij.append((p.i, p.j))
+            counts.append(len(k))
+            pi.append(p.pts_i[k] / match_scale)
+            pj.append(p.pts_j[k] / match_scale)
+        data.update(
+            solved_rotations=np.asarray(result.rotations),  # before any wrap squeeze
+            prior_rotations=np.asarray(result.prior.rotations),
+            averaged_rotations=np.asarray(result.averaged),
+            pair_ij=np.array(ij), pair_counts=np.array(counts),
+            pts_i=np.concatenate(pi), pts_j=np.concatenate(pj),
+        )
+    np.savez_compressed(output_dir / "orientation.npz", **data)
+
+
+def with_focal_ratio(calib: CalibrationData, ratio: float) -> CalibrationData:
+    """The same calibration with both focal lengths scaled by ratio."""
+    if ratio == 1.0:
+        return calib
+    return CalibrationData(fx=calib.fx * ratio, fy=calib.fy * ratio, cx=calib.cx, cy=calib.cy,
+                           dist_coeffs=calib.dist_coeffs,
+                           source=f"{calib.source}; focal refined by bundle adjustment (x{ratio:.4f})")
+
+
 def run_pipeline(config: PipelineConfig) -> Path:
     """
     Run the complete panorama stitching pipeline.
@@ -354,138 +681,52 @@ def run_pipeline(config: PipelineConfig) -> Path:
     # ============================================================
     logger.info("\n[STEP 3] Loading images for feature matching...")
     
-    if config.matching.match_width is None:
-        match_scale = 1.0
-        match_images = load_images(image_infos, None)
-        logger.info(f"Using full resolution images for matching (no downscaling)")
+    match_width = config.matching.match_width
+    if match_width is not None and match_width >= image_width:
+        # load_image only ever shrinks, so frames narrower than match_width are matched as
+        # they are; scaling K for them would make every rotation wrong
+        match_width = None
+    match_scale = 1.0 if match_width is None else match_width / image_width
+    if match_width is None:
+        logger.info("Using full resolution images for matching (no downscaling)")
     else:
-        match_scale = config.matching.match_width / image_width
-        match_images = load_images(image_infos, config.matching.match_width)
-        logger.info(f"Match scale: {match_scale:.3f} ({config.matching.match_width}px width)")
+        logger.info(f"Match scale: {match_scale:.3f} ({match_width}px width)")
+
+    needs_match_undistort = bool(calib.dist_coeffs) and any(d != 0 for d in calib.dist_coeffs)
+    if needs_match_undistort:
+        match_images = load_images(image_infos, match_width)
+    else:
+        # Frames are read from disk as matching reaches them. Holding a long video's
+        # frames all at once costs gigabytes at full resolution.
+        match_images = LazyImages(image_infos, match_width)
     
     # ============================================================
     # STEP 4: (Optional) Undistort images
     # ============================================================
-    if calib.dist_coeffs and any(d != 0 for d in calib.dist_coeffs):
+    if needs_match_undistort:
         logger.info("\n[STEP 3b] Undistorting images...")
         match_images, calib = undistort_images(match_images, calib)
     
-    # ============================================================
-    # STEP 5: Feature matching
-    # ============================================================
-    logger.info("\n[STEP 4] Matching features between adjacent images...")
-    
-    match_results = match_sequential_pairs(
-        match_images,
-        config.matching,
-        scale=match_scale
-    )
-    
-    # Check matching quality
-    success, message = check_matching_quality(match_results, config.matching.min_inliers)
-    if not success:
-        # Count failed pairs
-        failed_count = sum(1 for r in match_results if not r.success)
-        total_pairs = len(match_results)
-        success_rate = (total_pairs - failed_count) / total_pairs * 100
-        
-        logger.warning(f"Some pairs failed to match ({failed_count}/{total_pairs}, {success_rate:.1f}% success rate)")
-        logger.warning("Continuing with identity rotations for failed pairs...")
-        logger.warning(message)
-        
-        # Save debug visualizations for failed matches
-        if config.debug.enabled:
-            for result in match_results:
-                if not result.success:
-                    vis_path = config.output_dir / "debug" / "matches" / f"match_{result.src_idx}_{result.dst_idx}.jpg"
-                    save_match_visualization(
-                        match_images[result.src_idx],
-                        match_images[result.dst_idx],
-                        result,
-                        vis_path
-                    )
-        
-        # Don't fail - continue with identity rotations for failed pairs
-        # The rotation computation will handle this automatically
-    
-    # Save match visualizations if debug enabled
-    if config.debug.enabled and config.debug.save_matches:
-        for result in match_results:
-            vis_path = config.output_dir / "debug" / "matches" / f"match_{result.src_idx}_{result.dst_idx}.jpg"
-            save_match_visualization(
-                match_images[result.src_idx],
-                match_images[result.dst_idx],
-                result,
-                vis_path
-            )
-    
-    # ============================================================
-    # STEP 6: Compute rotations
-    # ============================================================
-    logger.info("\n[STEP 5] Computing rotations from homographies...")
-    
-    # Scale K for match resolution
+    # Intrinsics at match resolution (after any undistortion)
     K_match = calib.K.copy()
     K_match[0, 0] *= match_scale
     K_match[1, 1] *= match_scale
     K_match[0, 2] *= match_scale
     K_match[1, 2] *= match_scale
-    
-    relative_rotations, rotation_diags = compute_relative_rotations(
-        match_results,
-        K_match,
-        scale_factor=1.0  # Already at match scale
-    )
-    
-    global_rotations = chain_rotations(
-        relative_rotations,
-        apply_smoothing=config.matching.rotation_smoothing_window > 1,
-        smoothing_window=config.matching.rotation_smoothing_window
-    )
-    log_rotation_summary(global_rotations, rotation_diags)
-    
-    # ============================================================
-    # STEP 5b: Detect and trim circular closure (if >360° captured)
-    # ============================================================
-    if config.matching.disable_circular_closure:
-        logger.info("Circular closure detection is disabled")
-        trim_idx = None
-    else:
-        trim_idx = detect_circular_closure(
-            match_images,
-            match_results,
-            global_rotations,
-            config.matching,
-            scale=match_scale
-        )
-        
-        if trim_idx is not None and trim_idx < len(image_infos) - 1:
-            # Trim excess frames after closure point
-            match_images, image_infos, match_results, global_rotations = trim_excess_frames(
-                match_images,
-                image_infos,
-                match_results,
-                global_rotations,
-                trim_idx
-            )
-            
-            logger.info(f"Circular closure detected: trimmed to {len(image_infos)} frames")
 
-    # ============================================================
-    # STEP 5c: Keep the sweep from wrapping onto itself
-    # ============================================================
-    # A chain that over-estimates can report enough yaw to close the circle even when the
-    # camera never came back round. The warp would then drop the last frames onto the same
-    # arc as the first ones and paint unrelated content over them. Trimming already handled
-    # the case where the frames genuinely do overlap; anything left is drift.
-    hfov_deg = 2.0 * np.degrees(np.arctan(calib.K[0, 2] / calib.K[0, 0]))
-    collision = head_tail_overlap(match_images, global_rotations, hfov_deg)
-    if trim_idx is None and collision is not None:
-        first, last = collision
-        logger.warning(f"Frames {first}-{last} would land on the first frame's arc")
-        global_rotations, wrap_report = enforce_open_sweep(global_rotations, hfov_deg)
-    elif collision is not None:
-        logger.info("Wrap overlap resolved by trimming at the closure point")
+    if config.orientation.method == "bundle":
+        global_rotations, focal_ratio = orient_with_bundle_adjustment(
+            config, image_infos, match_images, K_match, match_scale
+        )
+    else:
+        global_rotations, match_images, image_infos = orient_with_chain(
+            config, match_images, image_infos, calib, K_match, match_scale
+        )
+        focal_ratio = 1.0
+
+    # Matching copies are not used past this point; at full resolution they are
+    # gigabytes, and the warp loads its own frames.
+    del match_images
 
     # ============================================================
     # STEP 6: Load full-resolution images and warp
@@ -548,6 +789,8 @@ def run_pipeline(config: PipelineConfig) -> Path:
             panorama[is_better] = warped[is_better]
             best_mask_value = np.maximum(best_mask_value, mask)
         
+        calib_full = with_focal_ratio(calib_full, focal_ratio)
+
         # Process images sequentially
         masks = warp_and_blend_sequential(
             image_infos,
@@ -557,7 +800,8 @@ def run_pipeline(config: PipelineConfig) -> Path:
             blend_callback,
             image_width,
             image_height,
-            undistort_func
+            undistort_func,
+            keep_masks=False,  # coverage and gap filling only need the union
         )
         
         warped_images = None  # Not stored for "none" blending
@@ -572,6 +816,8 @@ def run_pipeline(config: PipelineConfig) -> Path:
             logger.info("Undistorting full-resolution images...")
             full_images, calib_full = undistort_images(full_images, calib_full)
         
+        calib_full = with_focal_ratio(calib_full, focal_ratio)
+
         # Warp images
         warped_images, masks = warp_all_images(
             full_images,

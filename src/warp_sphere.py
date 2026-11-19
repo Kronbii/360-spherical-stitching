@@ -289,7 +289,8 @@ def warp_and_blend_sequential(
     blend_callback: Callable[[np.ndarray, np.ndarray, int], None],
     image_width: int,
     image_height: int,
-    undistort_func: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    undistort_func: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    keep_masks: bool = True
 ) -> List[np.ndarray]:
     """
     Warp images sequentially and call blend_callback for each warped image.
@@ -305,9 +306,12 @@ def warp_and_blend_sequential(
         image_width: Source image width.
         image_height: Source image height.
         undistort_func: Optional function to undistort images (if provided).
+        keep_masks: Return every frame's mask. Each is a full panorama in size, so a long
+            video's masks run to gigabytes; with False, a single mask of every pixel any
+            frame covered is returned instead, which is all coverage and gap filling need.
         
     Returns:
-        List of masks (for coverage statistics).
+        List of masks: one per frame, or a single union mask when keep_masks is False.
     """
     from .io_utils import load_image
 
@@ -346,13 +350,20 @@ def warp_and_blend_sequential(
             logger.debug(f"  Image {idx+1}: {coverage:.1f}% panorama coverage")
 
     masks = []
+    union = None if keep_masks else np.zeros((H, W), dtype=np.uint8)
+
+    def keep(mask: np.ndarray) -> None:
+        if keep_masks:
+            masks.append(mask)
+        else:
+            np.maximum(union, mask, out=union)
 
     if workers == 1:
         for i in range(n):
             warped, mask = warp_one(i)
             report(i, mask)
             blend_callback(warped, mask, i)
-            masks.append(mask)
+            keep(mask)
             del warped
     else:
         # Keep only a small number of warped frames in flight: each one is
@@ -368,12 +379,12 @@ def warp_and_blend_sequential(
                 warped, mask = pending.pop(i).result()
                 report(i, mask)
                 blend_callback(warped, mask, i)
-                masks.append(mask)
+                keep(mask)
                 del warped
 
     logger.info(f"Warped all {n} images")
 
-    return masks
+    return masks if keep_masks else [union]
 
 
 def estimate_panorama_coverage(masks: List[np.ndarray]) -> dict:
