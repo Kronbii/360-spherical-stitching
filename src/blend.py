@@ -126,7 +126,7 @@ def feather_blend(
     # Avoid division by zero
     nonzero = total_weight > 1e-6
     for c in range(3):
-        result[:, :, c] = np.where(nonzero, result[:, :, c] / total_weight, 0)
+        np.divide(result[:, :, c], total_weight, out=result[:, :, c], where=nonzero)
     
     # Convert to uint8
     result = np.clip(result, 0, 255).astype(np.uint8)
@@ -534,4 +534,3 @@ def create_seam_visualization(
         vis[mask_bool] = color
     
     return vis
-

@@ -36,10 +36,15 @@ matching:
   disable_circular_closure: true  # Set to true if your video doesn't loop (prevents false closure detection)
   rotation_smoothing_window: 17  # Temporal smoothing window for rotations (odd, 3-15 recommended, larger = straighter lines, may oversmooth)
 
+# How frame orientations are estimated (see USAGE.md, "Orientation")
+orientation:
+  method: bundle  # bundle: loop closures + rotation averaging + bundle adjustment; chain: v1 (chained, smoothed)
+  # With bundle, rotation_smoothing_window above is not used. A gyro log goes in an imu: section.
+
 # Camera intrinsics
 intrinsics:
   hfov_deg: 42  # Horizontal field of view in degrees (fallback if EXIF unavailable)
-  calib_json: ./intrinsics.json  # Path to calibration JSON file (optional)
+  calib_json: ./intrinsics.json  # Path to calibration JSON file (optional). Focal measured on a full loop; see USAGE.md
 
 # Blending settings
 blending:

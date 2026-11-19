@@ -57,5 +57,6 @@ python=*/
 # Vercel
 .vercel
 
-# the showcase site ships its own imagery
+# the showcase site and the README ship their own imagery
 !docs/assets/**
+!docs/media/**

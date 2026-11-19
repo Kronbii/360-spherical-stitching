@@ -192,13 +192,15 @@ class TestRunPipeline:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_debug_mode_saves_artifacts(self, test_images_dir, temp_dir):
-        """Test debug mode saves intermediate artifacts."""
+        """Test debug mode saves intermediate artifacts (v1 chain path)."""
+        from src.config import OrientationConfig
         config = PipelineConfig(
             input_dir=test_images_dir,
             output_dir=temp_dir / "output",
             matching=MatchingConfig(min_inliers=20),
             output=OutputConfig(pano_width=512),
             debug=DebugConfig(enabled=True, save_matches=True, save_warped_frames=2),
+            orientation=OrientationConfig(method="chain"),
         )
         
         run_pipeline(config)

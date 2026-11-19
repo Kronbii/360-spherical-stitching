@@ -172,6 +172,12 @@ def compute_warp_maps(
     valid_mask &= map_y >= margin
     valid_mask &= map_y < image_height - margin
 
+    # OpenCV ignores these coordinates once the output mask is applied, but an explicit
+    # sentinel makes the maps safe to inspect or reuse without accidentally sampling a
+    # plausible source pixel for an invalid direction.
+    map_x[~valid_mask] = -1.0
+    map_y[~valid_mask] = -1.0
+
     return map_x, map_y, valid_mask
 
 
@@ -283,7 +289,8 @@ def warp_and_blend_sequential(
     blend_callback: Callable[[np.ndarray, np.ndarray, int], None],
     image_width: int,
     image_height: int,
-    undistort_func: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    undistort_func: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    keep_masks: bool = True
 ) -> List[np.ndarray]:
     """
     Warp images sequentially and call blend_callback for each warped image.
@@ -299,9 +306,12 @@ def warp_and_blend_sequential(
         image_width: Source image width.
         image_height: Source image height.
         undistort_func: Optional function to undistort images (if provided).
+        keep_masks: Return every frame's mask. Each is a full panorama in size, so a long
+            video's masks run to gigabytes; with False, a single mask of every pixel any
+            frame covered is returned instead, which is all coverage and gap filling need.
         
     Returns:
-        List of masks (for coverage statistics).
+        List of masks: one per frame, or a single union mask when keep_masks is False.
     """
     from .io_utils import load_image
 
@@ -340,13 +350,20 @@ def warp_and_blend_sequential(
             logger.debug(f"  Image {idx+1}: {coverage:.1f}% panorama coverage")
 
     masks = []
+    union = None if keep_masks else np.zeros((H, W), dtype=np.uint8)
+
+    def keep(mask: np.ndarray) -> None:
+        if keep_masks:
+            masks.append(mask)
+        else:
+            np.maximum(union, mask, out=union)
 
     if workers == 1:
         for i in range(n):
             warped, mask = warp_one(i)
             report(i, mask)
             blend_callback(warped, mask, i)
-            masks.append(mask)
+            keep(mask)
             del warped
     else:
         # Keep only a small number of warped frames in flight: each one is
@@ -362,12 +379,12 @@ def warp_and_blend_sequential(
                 warped, mask = pending.pop(i).result()
                 report(i, mask)
                 blend_callback(warped, mask, i)
-                masks.append(mask)
+                keep(mask)
                 del warped
 
     logger.info(f"Warped all {n} images")
 
-    return masks
+    return masks if keep_masks else [union]
 
 
 def estimate_panorama_coverage(masks: List[np.ndarray]) -> dict:
@@ -381,22 +398,30 @@ def estimate_panorama_coverage(masks: List[np.ndarray]) -> dict:
         Dictionary with coverage statistics.
     """
     if not masks:
-        return {"coverage_percent": 0.0, "total_pixels": 0, "covered_pixels": 0}
+        return {}
     
-    # Combine all masks
-    combined = np.zeros_like(masks[0])
+    # Count how many source images cover each output pixel. A uint32 accumulator avoids
+    # overflow for long videos while using only one panorama-sized working array.
+    coverage_count = np.zeros(masks[0].shape, dtype=np.uint32)
     for mask in masks:
-        combined = np.maximum(combined, mask)
+        if mask.shape != masks[0].shape:
+            raise ValueError("All coverage masks must have the same shape")
+        coverage_count += mask > 0
     
-    H, W = combined.shape
+    H, W = coverage_count.shape
     total_pixels = H * W
-    covered_pixels = np.sum(combined > 0)
+    covered_pixels = int(np.count_nonzero(coverage_count))
+    single_coverage_pixels = int(np.count_nonzero(coverage_count == 1))
+    multi_coverage_pixels = int(np.count_nonzero(coverage_count > 1))
     coverage_percent = (covered_pixels / total_pixels) * 100
     
     return {
-        "coverage_percent": coverage_percent,
+        "coverage_percent": float(coverage_percent),
         "total_pixels": total_pixels,
         "covered_pixels": covered_pixels,
+        "single_coverage_pixels": single_coverage_pixels,
+        "multi_coverage_pixels": multi_coverage_pixels,
+        "max_overlap": int(coverage_count.max()),
     }
 
 

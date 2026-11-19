@@ -1,7 +1,8 @@
 {
-  "fx": 1475.0,
-  "fy": 1475.0,
+  "fx": 1669.4,
+  "fy": 1669.4,
   "cx": 540.0,
   "cy": 960.0,
-  "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0]
+  "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+  "note": "iPhone 13 Pro main camera, 1080x1920 video with stabilisation. Focal length measured by bundle adjustment on IMG_1480.MOV, whose sweep closes its loop (was 1475, 11.6% short)."
 }

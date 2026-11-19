@@ -73,7 +73,8 @@ def estimate_from_calib_json(calib_path: Path, image_width: int, image_height: i
             fy=fy,
             cx=cx,
             cy=cy,
-            dist_coeffs=dist_coeffs
+            dist_coeffs=dist_coeffs,
+            source=f"calibration JSON: {calib_path}",
         )
         
         logger.info(f"Loaded calibration from {calib_path}")
@@ -128,7 +129,8 @@ def estimate_from_35mm_equivalent(exif_data: dict, image_width: int, image_heigh
         fx=fx_pixels,
         fy=fy_pixels,
         cx=cx,
-        cy=cy
+        cy=cy,
+        source=f"EXIF 35mm equivalent ({f35:g}mm)",
     )
     
     logger.info(f"Estimated intrinsics from 35mm equivalent focal length")
@@ -182,7 +184,8 @@ def estimate_from_focal_length(exif_data: dict, image_width: int, image_height: 
         fx=fx_pixels,
         fy=fy_pixels,
         cx=cx,
-        cy=cy
+        cy=cy,
+        source=f"EXIF focal length ({focal_length:g}mm, sensor width {sensor_width:g}mm)",
     )
     
     return calib
@@ -212,7 +215,8 @@ def estimate_from_hfov(hfov_deg: float, image_width: int, image_height: int) -> 
         fx=fx,
         fy=fy,
         cx=cx,
-        cy=cy
+        cy=cy,
+        source=f"HFOV fallback ({hfov_deg:g}°)",
     )
     
     logger.info(f"Using HFOV fallback for intrinsics")
@@ -318,7 +322,7 @@ def save_intrinsics_report(
             "dist_coeffs": calib.dist_coeffs,
         },
         "camera_matrix_K": calib.K.tolist(),
-        "estimation_source": "estimated",
+        "estimation_source": calib.source,
         "image_dimensions": {
             "width": image_width,
             "height": image_height,
@@ -379,7 +383,8 @@ def undistort_images(
         fy=new_K[1, 1],
         cx=new_K[0, 2],
         cy=new_K[1, 2],
-        dist_coeffs=None  # No distortion after undistortion
+        dist_coeffs=None,  # No distortion after undistortion
+        source=f"{calib.source}; undistorted",
     )
     
     logger.info(f"Undistorted {len(images)} images")
@@ -425,4 +430,3 @@ def undistort_image_single(
     undistorted = cv2.remap(image, map1, map2, cv2.INTER_LINEAR)
     
     return undistorted
-
